@@ -12,6 +12,9 @@ import type { AbilityTag, InterviewAction } from "./types";
  * - 过不过/录用/内部政策 →「这个面试环节不好说，我们先回到题目。」
  * - 弄虚作假 → 改简历再来 + endInterview
  * - 答太长 →「那我们先看下一个问题。」（engine softSkip）
+ *
+ * 「再说一遍 / 重复一下 / 没听清」不走本库改写：由 decideTurn 优先
+ * 原样重播 lastUtterance（REPEAT / verbatim），即使历史库曾有 REFRAME 条目也无效。
  */
 
 export type ReplyBankFlags = {

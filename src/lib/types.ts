@@ -20,7 +20,9 @@ export type AbilityTag =
   /** 提示后仍答出关键点 */
   | "answered_after_hint"
   /** 没做过本题域，但给出了可评估的相邻迁移 */
-  | "transfer_experience_shown";
+  | "transfer_experience_shown"
+  /** 口述与简历冲突：真实性风险（未到诚信结束红线） */
+  | "authenticity_risk";
 
 export type InterviewAction =
   | "ASK"
@@ -29,6 +31,8 @@ export type InterviewAction =
   | "FOLLOW_UP_PITFALL"
   | "FOLLOW_UP_OWNERSHIP"
   | "REFRAME"
+  /** 候选人要求复述：原样重播上一句/当前题，禁止改写 */
+  | "REPEAT"
   | "HINT_DIRECTION"
   | "TIMEBOX"
   | "SKIP_SOFT"
@@ -113,6 +117,10 @@ export type TurnSignals = {
   replyBankId?: number;
   /** 回答空泛/笼统/不够细致 */
   vague?: boolean;
+  /** 候选人要求把问题/上一句再说一遍 */
+  repeatRequest?: boolean;
+  /** 口述与简历存在可挑战的冲突 */
+  resumeConflict?: boolean;
 };
 
 export type QuestionRuntime = {
@@ -127,6 +135,8 @@ export type QuestionRuntime = {
   coachCount: number;
   /** 本题「没做过」迁移追问次数（上限 1） */
   transferProbeCount: number;
+  /** 本题「简历冲突」挑战次数（上限 1） */
+  resumeConflictProbeCount: number;
   /** 当前分级提示档位 0=未提示 */
   hintLevel: 0 | 1 | 2 | 3;
   /** 本题作答独立性（复盘用） */
@@ -168,6 +178,8 @@ export type FeedbackReport = {
   integrityBreach?: boolean;
   /** 本场存在反复空泛、细节不足 */
   vagueInsufficientDetail?: boolean;
+  /** 本场存在口述与简历冲突（真实性风险） */
+  authenticityRisk?: boolean;
 };
 
 export type InterviewSession = {

@@ -69,6 +69,15 @@ export default function FeedbackPage() {
             </section>
           ) : null}
 
+          {feedback.authenticityRisk ? (
+            <section className="rounded-2xl border border-[var(--accent)]/40 bg-[var(--accent)]/10 p-5">
+              <h2 className="mb-2 text-lg font-medium">真实性风险</h2>
+              <p className="leading-7 text-[var(--muted)]">
+                本场存在口述与简历不一致之处。请对齐指标、技术栈与职责表述，只保留可复盘的亲历细节。
+              </p>
+            </section>
+          ) : null}
+
           {feedback.dimensions?.length ? (
             <section className="rounded-2xl border border-[var(--line)] bg-[var(--card)]/80 p-5">
               <h2 className="mb-3 text-lg font-medium">能力维度</h2>

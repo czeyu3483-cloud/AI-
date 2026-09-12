@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { generateFeedback, polishUtterance } from "@/lib/deepseek";
 import { decideTurn } from "@/lib/engine";
+import { resumeContextForPolish } from "@/lib/resumeConflict";
 import { getSession, pushEvent, saveSession } from "@/lib/store";
 
 export async function POST(req: Request) {
@@ -47,8 +48,18 @@ export async function POST(req: Request) {
     }
 
     const q = session.queue[Math.min(session.currentIndex, session.queue.length - 1)]!;
-    // replyBank / 全局控场原句 / 诚信结束：保留口吻，不做润色改写
+    // REPEAT / replyBank / 全局控场原句 / 诚信结束：保留口吻，不做润色改写
+    // 简历冲突：可带 resumeContext 轻润色，但 draft 已含两侧事实
     // FOLLOW_UP 非 verbatim：带上候选人上一句，让润色贴着具体名词追问
+    const skipPolish = Boolean(
+      decision.verbatim ||
+        decision.action === "REPEAT" ||
+        decision.signals.repeatRequest ||
+        decision.signals.integrityBreach ||
+        decision.signals.needsTimeToThink ||
+        decision.signals.replyBankId != null ||
+        shouldEnd,
+    );
     const polished = await polishUtterance({
       action: decision.action,
       draft: decision.utterance,
@@ -57,23 +68,27 @@ export async function POST(req: Request) {
       tone: session.config.tone,
       trackId: session.trackId || "biz",
       candidateLevel: session.candidateLevel || "campus",
-      skipPolish: Boolean(
-        decision.verbatim ||
-          decision.signals.integrityBreach ||
-          decision.signals.needsTimeToThink ||
-          decision.signals.replyBankId != null ||
-          shouldEnd,
-      ),
+      skipPolish,
       bankStyle:
         decision.signals.replyBankId != null
           ? `replyBank#${decision.signals.replyBankId}`
           : undefined,
+      resumeContext: decision.signals.resumeConflict
+        ? resumeContextForPolish(session.resume)
+        : undefined,
     });
     decision.utterance = polished.text;
 
     if (decision.pendingTags?.length) {
       const rt = session.runtimes[session.currentIndex];
       if (rt) rt.tags = Array.from(new Set([...rt.tags, ...decision.pendingTags]));
+    }
+
+    // REPEAT：必须保持与上一句完全一致（防止任何路径改写）
+    if (decision.action === "REPEAT" || decision.signals.repeatRequest) {
+      decision.utterance =
+        (session.lastUtterance && session.lastUtterance.trim()) || decision.utterance;
+      decision.verbatim = true;
     }
 
     session.lastAction = decision.action;

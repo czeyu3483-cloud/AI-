@@ -85,6 +85,8 @@ export async function polishUtterance(input: {
   skipPolish?: boolean;
   /** 可选：命中的 replyBank 风格摘要（仅非 verbatim 时参考） */
   bankStyle?: string;
+  /** 简历摘要：用于口述 vs 简历冲突类追问的轻润色 */
+  resumeContext?: string;
 }) {
   const fallback = input.draft;
   if (input.skipPolish) return { text: fallback, mocked: false };
@@ -95,6 +97,8 @@ export async function polishUtterance(input: {
   const isFollowUp = String(input.action).startsWith("FOLLOW_UP");
   const isHint = input.action === "HINT_DIRECTION";
   const isHr = trackId === "hr_final";
+  const isRepeat = input.action === "REPEAT";
+  if (isRepeat) return { text: fallback, mocked: false };
   const followHint = isFollowUp
     ? isHr
       ? "【追问】跟住候选人上一句里的动机/协作/抗压/规划细节，禁止反复同一句「太笼统/再具体一点」；不要转成算法或架构刨根。"
@@ -102,6 +106,9 @@ export async function polishUtterance(input: {
     : isHint
       ? "【提示】只给方向不给答案；保持尊重，勿嘲讽。"
       : "";
+  const resumeHint = input.resumeContext
+    ? "【简历冲突】若 draft 在对比简历与口述，必须保留两侧事实原意，仅可微调语气；禁止抹平冲突或改成无关新问题。"
+    : "";
   try {
     const completion = await c.chat.completions.create({
       model: modelName(),
@@ -114,7 +121,8 @@ export async function polishUtterance(input: {
             polishRoleLine(trackId) +
             polishGlobalPolicyBlock() +
             depthExpectation(level) +
-            followHint,
+            followHint +
+            resumeHint,
         },
         {
           role: "user",
@@ -127,11 +135,14 @@ export async function polishUtterance(input: {
             currentQuestion: input.questionPrompt,
             userAnswer: input.userAnswer?.slice(0, 800) ?? "",
             bankStyle: input.bankStyle || undefined,
-            instruction: isFollowUp
-              ? isHr
-                ? "根据 userAnswer 输出一句偏适配/动机/协作的贴地追问；勿复读空泛套话，勿硬核架构刨根。"
-                : "根据 userAnswer 里最新具体信息，输出一句贴地追问；勿复读空泛套话。"
-              : undefined,
+            resumeContext: input.resumeContext || undefined,
+            instruction: input.resumeContext
+              ? "若涉及简历不一致，输出一句专业挑战；保留简历侧与口述侧关键信息，问清以哪边为准。"
+              : isFollowUp
+                ? isHr
+                  ? "根据 userAnswer 输出一句偏适配/动机/协作的贴地追问；勿复读空泛套话，勿硬核架构刨根。"
+                  : "根据 userAnswer 里最新具体信息，输出一句贴地追问；勿复读空泛套话。"
+                : undefined,
           }),
         },
       ],
@@ -304,6 +315,11 @@ function sessionHasVagueTag(session: InterviewSession): boolean {
   return session.runtimes.some((rt) => rt.tags.includes("vague_insufficient_detail"));
 }
 
+function sessionHasAuthenticityRisk(session: InterviewSession): boolean {
+  if (session.sessionTags?.includes("authenticity_risk")) return true;
+  return session.runtimes.some((rt) => rt.tags.includes("authenticity_risk"));
+}
+
 function ensureVagueFeedbackText(summary: string, vague: boolean): string {
   if (!vague) return summary;
   if (/不够细致|不够具体|空泛|笼统|细节不足|not detailed/i.test(summary)) return summary;
@@ -313,10 +329,20 @@ function ensureVagueFeedbackText(summary: string, vague: boolean): string {
   );
 }
 
+function ensureAuthenticityFeedbackText(summary: string, risk: boolean): string {
+  if (!risk) return summary;
+  if (/真实性风险|与简历不一致|口述与简历|authenticity/i.test(summary)) return summary;
+  return (
+    summary.trim() +
+    " 另需点名：本场存在口述与简历不一致之处，项目真实性存在风险，下次面试前请先对齐简历与可复盘细节。"
+  );
+}
+
 function heuristicDimensionScores(
   session: InterviewSession,
   trackId: TrackId,
   vague: boolean,
+  authenticityRisk: boolean,
 ): FeedbackDimensionScore[] {
   const allTags = new Set(session.runtimes.flatMap((rt) => rt.tags));
   const answered = session.runtimes.filter((rt) => rt.userAnswers.join("").length > 40).length;
@@ -330,6 +356,9 @@ function heuristicDimensionScores(
   const scoreOf = (id: (typeof FEEDBACK_DIMENSIONS)[number]["id"]): number => {
     let s = base;
     if (id === "project_authenticity" && allTags.has("surface_knowledge_no_practice")) s = Math.min(s, 2);
+    if (id === "project_authenticity" && (authenticityRisk || allTags.has("authenticity_risk"))) {
+      s = Math.min(s, 2);
+    }
     if (id === "tech_depth" && trackId === "biz") {
       if (stillCant) s = Math.min(s, 2);
       if (afterHint) s = Math.min(s, 3);
@@ -351,7 +380,11 @@ function heuristicDimensionScores(
       score,
       band: scoreToBand(score),
       weight: TRACK_DIMENSION_WEIGHTS[trackId][d.id],
-      evidence: vague ? "回答偏空泛，细节不足" : "基于本场作答与标签启发式估计",
+      evidence: authenticityRisk && d.id === "project_authenticity"
+        ? "口述与简历冲突，真实性风险"
+        : vague
+          ? "回答偏空泛，细节不足"
+          : "基于本场作答与标签启发式估计",
     };
   });
 }
@@ -364,6 +397,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
   const trackId = session.trackId || "biz";
   const level = session.candidateLevel || DEFAULT_CANDIDATE_LEVEL;
   const vague = sessionHasVagueTag(session);
+  const authenticityRisk = sessionHasAuthenticityRisk(session);
   const trackLabel = TRACK_FOCUS[trackId].label;
   const levelLabel = CANDIDATE_LEVEL_LABEL[level];
   const baseSummary =
@@ -371,10 +405,13 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
       ? `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}）。整体完成了主流程；建议用具体协作场景、动机证据与上手计划证明适配度。本报告不做录用结论。`
       : `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}）。整体完成了主流程；建议继续用项目细节、取舍与边界证明实践深度。本报告不做录用结论。`;
 
-  const dimensions = heuristicDimensionScores(session, trackId, vague);
+  const dimensions = heuristicDimensionScores(session, trackId, vague, authenticityRisk);
 
   const fallback: FeedbackReport = {
-    overallSummary: ensureVagueFeedbackText(baseSummary, vague),
+    overallSummary: ensureAuthenticityFeedbackText(
+      ensureVagueFeedbackText(baseSummary, vague),
+      authenticityRisk,
+    ),
     perQuestion: session.runtimes.map((rt) => ({
       questionId: rt.question.id,
       prompt: rt.question.prompt,
@@ -400,11 +437,18 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
     candidateLevel: level,
     styleResolved: session.config.styleResolved,
     vagueInsufficientDetail: vague || undefined,
+    authenticityRisk: authenticityRisk || undefined,
   };
 
   if (vague) {
     fallback.topActions = [
       "回答不够细致：每题至少补「我做了什么 / 场景 / 怎么验证」三句话",
+      ...fallback.topActions,
+    ].slice(0, 5);
+  }
+  if (authenticityRisk) {
+    fallback.topActions = [
+      "对齐简历与口述：指标、技术栈、职责以可复盘事实为准",
       ...fallback.topActions,
     ].slice(0, 5);
   }
@@ -423,7 +467,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
           content:
             "输出复盘 JSON：{overallSummary, perQuestion:[{questionId,prompt,userAnswer,scores:[{dimension,score,evidence}],tags,improvements}],dimensions:[{dimension,score,band,weight,evidence}],topActions}。" +
             "分数1-5；band 为 强/中/弱/风险。不要宣判通过/不通过。不要 markdown。" +
-            feedbackPolicyBlock({ trackId, level, vague }),
+            feedbackPolicyBlock({ trackId, level, vague, authenticityRisk }),
         },
         {
           role: "user",
@@ -434,6 +478,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
             style: session.config.styleResolved,
             sessionTags: session.sessionTags || [],
             vagueInsufficientDetail: vague,
+            authenticityRisk,
             dimensionWeights: TRACK_DIMENSION_WEIGHTS[trackId],
             items: session.runtimes.map((rt) => ({
               questionId: rt.question.id,
@@ -471,9 +516,12 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
         })
       : dimensions;
     return {
-      overallSummary: ensureVagueFeedbackText(
-        String(json.overallSummary || fallback.overallSummary),
-        vague,
+      overallSummary: ensureAuthenticityFeedbackText(
+        ensureVagueFeedbackText(
+          String(json.overallSummary || fallback.overallSummary),
+          vague,
+        ),
+        authenticityRisk,
       ),
       perQuestion: Array.isArray(json.perQuestion) ? json.perQuestion : fallback.perQuestion,
       dimensions: dims,
@@ -483,6 +531,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
       candidateLevel: level,
       styleResolved: session.config.styleResolved,
       vagueInsufficientDetail: vague || undefined,
+      authenticityRisk: authenticityRisk || undefined,
     };
   } catch {
     return fallback;

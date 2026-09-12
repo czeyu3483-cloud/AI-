@@ -17,8 +17,13 @@ import {
   DEFAULT_CANDIDATE_LEVEL,
   hintUtterance,
   pickCoachLine,
+  RESUME_CONFLICT_GENERIC_UTTERANCE,
 } from "./interviewerPolicy";
 import { matchReplyBank } from "./replyBank";
+import {
+  craftResumeConflictUtterance,
+  detectResumeConflict,
+} from "./resumeConflict";
 import { HR_QUESTIONS } from "./questions/hr";
 import { RD_QUESTIONS } from "./questions/rd";
 import type {
@@ -135,6 +140,7 @@ export function createRuntimes(queue: Question[]): QuestionRuntime[] {
     vagueFollowUpCount: 0,
     coachCount: 0,
     transferProbeCount: 0,
+    resumeConflictProbeCount: 0,
     hintLevel: 0,
     userAnswers: [],
     tags: [],
@@ -222,6 +228,17 @@ export function craftGroundedFollowUp(
     return `你说「${clip}」——其中你亲自做的动作是哪一步？结果怎么验证？`;
   }
   return "其中哪一部分是你独立完成的？怎么证明？";
+}
+
+/** 候选人要求复述当前问题/上一句面试官话术（原样重播，禁止改写） */
+export function isRepeatRequest(answer: string): boolean {
+  const text = answer.trim();
+  if (!text || text.length > 80) return false;
+  return (
+    /再说一遍|再讲一遍|重复一下|重复一遍|没听清|没有听清|没听清楚|听不清|你能把问题再说一遍|把问题再说一遍|问题再说一遍|再说一遍问题|再问一遍|再读一遍/.test(
+      text,
+    )
+  );
 }
 
 function isShortThinkingRequest(text: string) {
@@ -454,11 +471,31 @@ export function decideTurn(input: {
 
   const signals = detectSignals(input.answer, input.silenceStuck);
   const pendingTags: AbilityTag[] = [];
+
+  // 0) 「再说一遍」：原样重播上一句面试官话术；优先于 replyBank 的改写/REFRAME
+  if (isRepeatRequest(input.answer)) {
+    signals.repeatRequest = true;
+    const utterance =
+      (session.lastUtterance && session.lastUtterance.trim()) ||
+      rt.question.prompt;
+    return {
+      action: "REPEAT",
+      utterance,
+      questionId: rt.question.id,
+      followUpCount: rt.followUpCount,
+      hintCount: rt.hintCount,
+      reframeCount: rt.reframeCount,
+      signals,
+      verbatim: true,
+    };
+  }
+
   if (input.answer.trim()) rt.userAnswers.push(input.answer.trim());
 
   // —— 全局政策优先（先于重追问）——
 
   // 1) 固定反应库：命中则原样回复（生产仅 1–30；诚信类可直接结束）
+  // 注意：若库内曾映射「再说一遍」→ REFRAME，已被上方 REPEAT 覆盖
   const bankHit = matchReplyBank(input.answer, { hintCount: rt.hintCount });
   if (bankHit) {
     signals.replyBankId = bankHit.id;
@@ -690,6 +727,39 @@ export function decideTurn(input: {
       pendingTags,
       verbatim: true,
     };
+  }
+
+  // 口述 vs 简历冲突：专业挑战一次并打 authenticity_risk；明确造假仍走诚信结束
+  if (
+    rt.resumeConflictProbeCount < 1 &&
+    pressureOf(rt) < cfg.maxPressurePerQuestion
+  ) {
+    const conflict = detectResumeConflict(
+      input.answer,
+      session.resume,
+      rt.question,
+    );
+    if (conflict) {
+      signals.resumeConflict = true;
+      rt.resumeConflictProbeCount += 1;
+      rt.followUpCount += 1;
+      pendingTags.push("authenticity_risk");
+      addSessionTag(session, "authenticity_risk");
+      return {
+        action: "FOLLOW_UP_OWNERSHIP",
+        utterance:
+          craftResumeConflictUtterance(conflict) ||
+          RESUME_CONFLICT_GENERIC_UTTERANCE,
+        questionId: rt.question.id,
+        followUpCount: rt.followUpCount,
+        hintCount: rt.hintCount,
+        reframeCount: rt.reframeCount,
+        signals,
+        pendingTags,
+        // 允许带简历上下文的轻润色；事实两侧已写进 draft
+        verbatim: false,
+      };
+    }
   }
 
   // 「没做过」≠ 不会/造假：问一次相邻迁移

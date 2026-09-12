@@ -135,6 +135,10 @@ export const NOT_DONE_TRANSFER_UTTERANCE =
 export const FABRICATION_PROBE_UTTERANCE =
   "和简历不一致的话解释一下——有数据支撑吗？你怎么验证的？";
 
+/** 口述与简历冲突（启发式挑战；可再经润色，但需保留两侧事实） */
+export const RESUME_CONFLICT_GENERIC_UTTERANCE =
+  "这个点和简历写法有点不一致，你解释一下。";
+
 /** 专业语气：尖锐但不嘲讽（润色 system 必含） */
 export const PROFESSIONAL_TONE_RULES =
   "语气尖锐但尊重：可用「这个点我没听清楚…」「有数据支撑吗？」「和简历不一致，解释一下」。" +
@@ -179,6 +183,7 @@ export function feedbackPolicyBlock(input: {
   trackId: TrackId;
   level: CandidateLevel;
   vague: boolean;
+  authenticityRisk?: boolean;
 }): string {
   const focus = TRACK_FOCUS[input.trackId];
   const dims = FEEDBACK_DIMENSIONS.map(
@@ -194,6 +199,9 @@ export function feedbackPolicyBlock(input: {
     "区分：不会≠造假；没做过可看迁移；编造才严肃点名。" +
     (input.vague
       ? "本场已标记 vague_insufficient_detail：overallSummary 必须写明「回答不够细致」。"
+      : "") +
+    (input.authenticityRisk
+      ? "本场已标记 authenticity_risk：overallSummary 必须点名「口述与简历不一致/真实性风险」，项目真实性维度偏低。"
       : "")
   );
 }
