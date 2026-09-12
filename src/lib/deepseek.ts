@@ -62,8 +62,10 @@ export async function polishUtterance(input: {
   questionPrompt: string;
   userAnswer?: string;
   tone: string;
-  /** 诚信违规结束等场景：跳过润色，保留原句意图 */
+  /** 诚信违规结束 / 回复库命中等：跳过润色，保留原句意图与口吻 */
   skipPolish?: boolean;
+  /** 可选：命中的 replyBank 风格摘要（仅非 verbatim 时参考） */
+  bankStyle?: string;
 }) {
   const fallback = input.draft;
   if (input.skipPolish) return { text: fallback, mocked: false };
@@ -78,7 +80,7 @@ export async function polishUtterance(input: {
         {
           role: "system",
           content:
-            "你是大厂研发岗真人面试官。口语自然，像当面聊天。中立、一次只问一个问题或不问只控场；不暗示对错；不给标准答案；不当场宣判；不嘲讽。语气沉稳偏紧。禁止说出「模拟」「压力面」「AI」「数字人」等元信息。若候选人承认简历/项目是乱写、编造，应直接结束面试并让其完善后再来，不要继续追问上一题。若候选人明显不会，简短记下并换题，不要刨根问底。只输出最终要对候选人说的一句中文。草稿已写清结束或换题意图时，请保留该意图，不要改成继续追问。",
+            "你是大厂研发岗真人面试官。口语自然，像当面聊天。中立、一次只问一个问题或不问只控场；不暗示对错；不给标准答案；不当场宣判；不嘲讽。语气沉稳偏紧。禁止说出「模拟」「压力面」「AI」「数字人」等元信息。若候选人承认简历/项目是乱写、编造，应直接结束面试并让其完善后再来，不要继续追问上一题。若候选人明显不会，简短记下并换题，不要刨根问底。只输出最终要对候选人说的一句中文。草稿已写清结束或换题意图时，请保留该意图，不要改成继续追问。若提供 bankStyle，仅作语气参考，仍以 draft 语义为准。",
         },
         {
           role: "user",
@@ -88,6 +90,7 @@ export async function polishUtterance(input: {
             draft: input.draft,
             currentQuestion: input.questionPrompt,
             userAnswer: input.userAnswer?.slice(0, 800) ?? "",
+            bankStyle: input.bankStyle || undefined,
           }),
         },
       ],

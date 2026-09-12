@@ -160,12 +160,16 @@ export function decideTurn(input: {
   const pendingTags: AbilityTag[] = [];
   if (input.answer.trim()) rt.userAnswers.push(input.answer.trim());
 
-  // 固定反应库优先：命中则原样回复（1–30；31–100 TODO 见 replyBank.ts）
+  // 固定反应库优先：命中则原样回复（约 100 条；诚信类可直接结束）
   const bankHit = matchReplyBank(input.answer, { hintCount: rt.hintCount });
   if (bankHit) {
     signals.replyBankId = bankHit.id;
-    if (bankHit.flags.endInterview) {
-      pendingTags.push("role_mismatch_suspected");
+    if (bankHit.tags?.length) pendingTags.push(...bankHit.tags);
+
+    if (bankHit.flags.endInterview || signals.integrityBreach) {
+      if (!pendingTags.includes("role_mismatch_suspected")) {
+        pendingTags.push("role_mismatch_suspected");
+      }
       signals.integrityBreach = true;
       if (pendingTags.length) rt.tags = Array.from(new Set([...rt.tags, ...pendingTags]));
       return {
@@ -181,11 +185,15 @@ export function decideTurn(input: {
         verbatim: true,
       };
     }
+
     if (bankHit.flags.hintOnce) {
       rt.hintCount += 1;
-      pendingTags.push("weak_independent_problem_solving");
+      rt.answerRequestCount += 1;
+      if (!pendingTags.includes("weak_independent_problem_solving")) {
+        pendingTags.push("weak_independent_problem_solving");
+      }
       return {
-        action: "REFRAME",
+        action: bankHit.action || "REFRAME",
         utterance: bankHit.reply,
         questionId: rt.question.id,
         followUpCount: rt.followUpCount,
@@ -196,18 +204,31 @@ export function decideTurn(input: {
         verbatim: true,
       };
     }
-    // 常规追问式命中：同题继续，话术不润色
-    if (pressureOf(rt) < cfg.maxPressurePerQuestion) {
+
+    if (bankHit.flags.softSkip) {
+      const decision = advance(session, "SKIP_SOFT", `${bankHit.reply}`, signals, pendingTags);
+      decision.verbatim = true;
+      return decision;
+    }
+
+    const action: InterviewAction =
+      bankHit.action ||
+      (signals.metaQuestionType || signals.askedForHint ? "FORMULA_DEFLECT" : "FOLLOW_UP_OWNERSHIP");
+
+    if (action.startsWith("FOLLOW_UP") && pressureOf(rt) < cfg.maxPressurePerQuestion) {
       rt.followUpCount += 1;
     }
+    if (action === "REFRAME") rt.reframeCount += 1;
+
     return {
-      action: "FOLLOW_UP_OWNERSHIP",
+      action,
       utterance: bankHit.reply,
       questionId: rt.question.id,
       followUpCount: rt.followUpCount,
       hintCount: rt.hintCount,
       reframeCount: rt.reframeCount,
       signals,
+      pendingTags: pendingTags.length ? pendingTags : undefined,
       verbatim: true,
     };
   }

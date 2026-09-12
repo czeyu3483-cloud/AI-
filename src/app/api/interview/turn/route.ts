@@ -36,15 +36,18 @@ export async function POST(req: Request) {
     });
 
     const q = session.queue[Math.min(session.currentIndex, session.queue.length - 1)]!;
-    // 诚信问题结束语不要被润色改掉意图
+    // replyBank / 诚信结束：保留原句口吻，不做润色改写
     const polished = await polishUtterance({
       action: decision.action,
       draft: decision.utterance,
       questionPrompt: q.prompt,
       userAnswer: body.answer,
       tone: session.config.tone,
-      // replyBank / 诚信结束：保留原句，不做润色改写
       skipPolish: Boolean(decision.verbatim || decision.signals.integrityBreach),
+      bankStyle:
+        decision.signals.replyBankId != null
+          ? `replyBank#${decision.signals.replyBankId}`
+          : undefined,
     });
     decision.utterance = polished.text;
 
