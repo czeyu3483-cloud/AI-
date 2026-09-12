@@ -28,10 +28,11 @@ export function buildOpeningLine(input: {
 }): string {
   const who = addressCandidate(input.candidateName);
   const hello = who === "同学" ? "同学你好" : `${who}你好`;
+  // 开场不告知题目数量（禁止「大约 N 个问题」）
   const focus =
     input.trackId === "hr_final"
-      ? "主要了解你的动机、协作方式和职业规划，轻松把经历讲清楚就行"
-      : "先请你做个自我介绍，再聊大约 4 个问题：围绕项目深挖、一道专业题，以及一道编程题（这次不想练也可以先不练、继续面试），你把思路讲清楚就行";
+      ? "主要想了解你的动机、协作方式和职业规划，把经历讲清楚就行"
+      : "想听听你的背景与项目经历；后面会围绕你做过的事往下聊，有编程环节的话这次不想练也可以先不练、继续面试";
   return (
     `${hello}，我是今天的面试官${input.interviewerName}。` +
     `今天${focus}。` +

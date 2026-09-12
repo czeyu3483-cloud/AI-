@@ -205,21 +205,43 @@ export default function InterviewPage() {
     audioRef.current?.pause();
     window.speechSynthesis?.cancel();
 
+    // 防止 TTS 挂起导致 busy 永不解除（自我介绍后无法点麦）
+    const budgetMs = Math.min(90_000, Math.max(12_000, text.length * 350));
+
     try {
-      const blob = await fetchTtsBlob(text);
+      const blob = await Promise.race([
+        fetchTtsBlob(text),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("TTS 超时")), Math.min(budgetMs, 25_000)),
+        ),
+      ]);
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audioRef.current = audio;
       await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          try {
+            audio.pause();
+          } catch {
+            // ignore
+          }
+          URL.revokeObjectURL(url);
+          resolve();
+        }, budgetMs);
         audio.onended = () => {
+          clearTimeout(timer);
           URL.revokeObjectURL(url);
           resolve();
         };
         audio.onerror = () => {
+          clearTimeout(timer);
           URL.revokeObjectURL(url);
           reject(new Error("音频播放失败"));
         };
-        void audio.play().catch(reject);
+        void audio.play().catch((err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
       });
       return;
     } catch {
@@ -247,8 +269,18 @@ export default function InterviewPage() {
     const voice = pickZhVoice();
     if (voice) utterance.voice = voice;
     await new Promise<void>((resolve) => {
-      utterance.onend = () => resolve();
-      utterance.onerror = () => resolve();
+      const timer = setTimeout(() => {
+        window.speechSynthesis?.cancel();
+        resolve();
+      }, budgetMs);
+      utterance.onend = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      utterance.onerror = () => {
+        clearTimeout(timer);
+        resolve();
+      };
       window.speechSynthesis.speak(utterance);
     });
   }
@@ -451,6 +483,12 @@ export default function InterviewPage() {
       }
       if (data.question?.isCoding || data.codingProblem) {
         setStatus("编程环节：在下方编辑器手写并跑测");
+      } else if (data.phase === "self_intro") {
+        // 补充追问后主动露出文字通道，避免 ASR 过短反复卡死
+        setShowTextFallback(true);
+        setStatus("介绍可以再展开一点；说完点麦克风提交，或用文字作答");
+      } else if (data.phase && data.phase !== "coding") {
+        setStatus("说完了。点麦克风开始说，再说一次结束并提交");
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "回合失败");

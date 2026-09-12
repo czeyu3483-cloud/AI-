@@ -85,7 +85,7 @@ function extractJsonObject(raw: string): Record<string, unknown> {
 export function sanitizeUtterance(text: string, fallback: string) {
   let out = text.replace(/\s+/g, " ").trim();
   if (!out) return fallback;
-  // 禁记录腔与当场判对错
+  // 禁记录腔、当场判对错、开场泄题量
   out = out
     .replace(/好的?[，,]?\s*我先记下了[。.]?/g, "好的，那我们看下一个问题。")
     .replace(/我记录一下你的回答[。.]?/g, "")
@@ -94,6 +94,14 @@ export function sanitizeUtterance(text: string, fallback: string) {
     .replace(/这(道题|个)答对了[。.]?/g, "")
     .replace(/回答正确[。.]?/g, "")
     .replace(/回答错误[。.]?/g, "")
+    .replace(/答得不对[。.]?/g, "")
+    .replace(/这个不对[。.]?/g, "")
+    .replace(/今天再聊大约\s*\d+\s*个问题[^。；;]*/g, "今天想听听你的经历与项目")
+    .replace(/再聊大约\s*\d+\s*个问题[^。；;]*/g, "接下来围绕你的经历往下聊")
+    .replace(/大约\s*\d+\s*个问题/g, "几个问题")
+    .replace(/一共\s*\d+\s*题/g, "")
+    .replace(/本场共\s*\d+\s*题/g, "")
+    .replace(/今天大概聊\s*\d+\s*个问题/g, "")
     .replace(/\s+/g, " ")
     .trim();
   if (!out) return fallback;
@@ -147,7 +155,7 @@ export async function polishUtterance(input: {
   try {
     const completion = await c.chat.completions.create({
       model: modelName(),
-      temperature: isFollowUp ? 0.55 : 0.45,
+      temperature: isFollowUp ? 0.65 : 0.55,
       max_tokens: 120,
       messages: [
         {
@@ -836,7 +844,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
       `以下仍给出各能力维度评分供复盘（诚信维单独标为严重）；本报告不做录用结论。`
     : trackId === "hr_final"
       ? `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}）。整体完成了主流程；建议用具体协作场景、动机证据与上手计划证明适配度。本报告不做录用结论。`
-      : `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}）。流程为自我介绍 + 约 4 题（简历深挖→学科专业题→编程，编程本次可不练）；建议继续用 WHY/规模/职责与边界证明实践深度。本报告不做录用结论。`;
+      : `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}）。流程含自我介绍、简历深挖、学科专业题与编程（编程本次可不练）；建议继续用 WHY/规模/职责与边界证明实践深度。本报告不做录用结论。`;
 
   let dimensions = heuristicDimensionScores(
     session,

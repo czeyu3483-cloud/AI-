@@ -30,7 +30,7 @@ export const DEMO_TRACKS: Array<{
   {
     id: "biz",
     label: "业务面",
-    hint: "先自我介绍，再约 4 题：简历深挖×2 → 学科专业题 → 编程（本次可不练、继续面试）；追问 WHY/规模/职责，不复述简历已写事实",
+    hint: "业务面：自我介绍后进入简历深挖、学科专业题与编程（本次可不练）；追问 WHY/规模/职责，不复述简历已写事实。开场不告知题量",
     enabled: true,
   },
   {
@@ -110,10 +110,11 @@ export function answerLimitsForAction(input: {
   hardSec: number;
 }): { answerSoftLimitSec?: number; answerHardLimitSec?: number } {
   const blob = `${input.utterance || ""} ${input.question?.prompt || ""}`;
-  const twoMin = /两分钟|2\s*分钟|二分钟|120\s*秒/.test(blob);
-  const oneMin = /一分钟|1\s*分钟|六十秒|60\s*秒/.test(blob);
+  // 「一两分钟就行」是软引导，不启硬时限；仅匹配明确限时口径
+  const twoMin = /(?:请在)?两分钟内|限时两分钟|2\s*分钟内|二分钟内|120\s*秒/.test(blob);
+  const oneMin = /(?:请在)?一分钟内|限时一分钟|1\s*分钟内|六十秒内|60\s*秒/.test(blob);
   const timedPhrase =
-    /限时|时间内|时间到|请在.{0,6}内|TIMEBOX|软时限|硬时限/.test(blob) ||
+    /限时|请在.{0,6}内|TIMEBOX|软时限|硬时限|时间内完成/.test(blob) ||
     twoMin ||
     oneMin;
   const timedAction = input.action === "TIMEBOX";
@@ -148,7 +149,7 @@ export const POLICY_THINKING_WAIT = "好的。";
 /** 全局控场：答太长/跑火车 → 软换下一题 */
 export const POLICY_RAMBLING_NEXT = "好的，那我们看下一个问题。";
 
-/** 学科专业题作答后的过渡（不宣判对错） */
+/** 学科专业题作答后的过渡（不宣判对错；具体用词由 utterancePool 轮换） */
 export const SUBJECT_ADVANCE_UTTERANCE = "好的，那我们看下一个问题。";
 
 /** @deprecated 开场白改为 persona.buildOpeningLine，保留常量以免旧引用报错 */
@@ -171,6 +172,9 @@ export const RED_FLAG_PATTERNS = [
   /我先记下了/,
   /我记录一下/,
   /记下了你的回答/,
+  /大约\d+个问题/,
+  /今天大概聊/,
+  /本场共\d+题/,
 ];
 
 export const SAMPLE_RESUME = `张三

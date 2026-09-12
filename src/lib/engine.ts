@@ -6,7 +6,6 @@ import {
   POLICY_THINKING_WAIT,
   PRESSURE_CONFIG,
   SKIP_SOFT_UTTERANCE,
-  SUBJECT_ADVANCE_UTTERANCE,
   VAGUE_SOFT_SKIP_UTTERANCE,
   configForTrack,
 } from "./config";
@@ -38,6 +37,7 @@ import { pickSubjectQuestion } from "./subjectQuestions";
 import {
   pickAdvancePrefix,
   pickFollowUpTemplate,
+  pickIntroSupplement,
   pickSkipSoftPrefix,
   pickVagueProbe,
 } from "./utterancePool";
@@ -145,7 +145,7 @@ export function buildQuestionQueue(
     roleId: "rd_general",
     trackId: "biz",
     phase: "self_intro",
-    prompt: "先做个简单的自我介绍吧，一两分钟就行，重点说说你的背景和最近在做的事。",
+    prompt: "先做个简单的自我介绍吧，简短说一下就行，重点说说你的背景和最近在做的事。",
     intent: "self_intro",
     followUpHints: ["背景", "经历", "动机"],
     rubrics: [
@@ -653,7 +653,7 @@ function advance(
     via === "SKIP_SOFT"
       ? skipText || pickSkipSoftPrefix(seed)
       : fromSubject
-        ? SUBJECT_ADVANCE_UTTERANCE
+        ? pickAdvancePrefix(seed + 11) // 学科题后只过渡，不暗示对错；话术轮换
         : pickAdvancePrefix(seed);
   // 阶段切换时简短提示（不赞美、不嘲讽）
   const prevPhase = current.question.phase;
@@ -675,6 +675,8 @@ function advance(
     reframeCount: next.reframeCount,
     signals,
     pendingTags,
+    // 过渡+题干已成型：禁止润色改写成打断/追问，避免卡在自我介绍后听感错乱
+    verbatim: true,
   };
 }
 
@@ -796,18 +798,30 @@ export function decideTurn(input: {
 
   if (input.answer.trim()) rt.userAnswers.push(input.answer.trim());
 
-  // 自我介绍：落盘供后续深挖 grounding；足够长度则直接进入主问题
-  if (rt.question.isSelfIntro || rt.question.phase === "self_intro") {
-    if (input.answer.trim().length >= 20) {
-      session.selfIntroText = input.answer.trim();
-      enrichDigsWithSelfIntro(session);
-      return advance(session, "ASK", "", signals, pendingTags);
+  // 自我介绍：落盘供后续深挖；不完整最多补充 1 次，然后必须进入主问题（修复「卡在自我介绍」）
+  // 若正在解释上一轮简历冲突挑战，则跳过本段，交给下方冲突解释逻辑
+  if (
+    (rt.question.isSelfIntro || rt.question.phase === "self_intro") &&
+    !session.pendingConflictChallenge
+  ) {
+    const text = input.answer.trim();
+    const INTRO_MIN = 16;
+    const isTimeoutPlaceholder = /时间到|作答截止/.test(text);
+    const incomplete = !text || text.length < INTRO_MIN || isTimeoutPlaceholder;
+
+    if (text && !isTimeoutPlaceholder) {
+      const prev = (session.selfIntroText || "").trim();
+      session.selfIntroText =
+        !prev || text.length >= prev.length ? text : `${prev} ${text}`.trim();
     }
-    if (input.answer.trim().length > 0 && input.answer.trim().length < 20) {
+
+    // 不完整：最多一次补充（与全局「最多补充一次」对齐）；静默卡死/二次短答则放行
+    if (incomplete && rt.vagueFollowUpCount < 1 && !input.silenceStuck) {
+      rt.vagueFollowUpCount += 1;
       rt.followUpCount += 1;
       return {
         action: "FOLLOW_UP_OWNERSHIP",
-        utterance: "再补充一点就好：你的教育/工作背景，以及最近一段相关经历。",
+        utterance: pickIntroSupplement(rt.followUpCount + session.currentIndex),
         questionId: rt.question.id,
         followUpCount: rt.followUpCount,
         hintCount: rt.hintCount,
@@ -816,6 +830,70 @@ export function decideTurn(input: {
         verbatim: true,
       };
     }
+
+    if (!session.selfIntroText && text) session.selfIntroText = text;
+    enrichDigsWithSelfIntro(session);
+
+    // 自我介绍 vs 简历：实质性冲突时专业挑战一次，再进入主问题
+    const introBlob = (session.selfIntroText || text || "").trim();
+    if (introBlob.length >= INTRO_MIN && rt.resumeConflictProbeCount < 1) {
+      const alreadyChallenged =
+        (session.authenticityChallengeCount || 0) > 0 ||
+        Boolean(session.pendingConflictChallenge);
+      let analysis = input.resumeAnalysis;
+      if (!analysis || analysis.severity === "none") {
+        const hit = detectResumeConflict(introBlob, session.resume, rt.question);
+        if (hit) {
+          analysis = {
+            conflict: true,
+            severity:
+              alreadyChallenged && (hit.level === 1 || hit.level === 3)
+                ? "integrity"
+                : "challenge",
+            level: hit.level,
+            kind: hit.kind,
+            resumeSide: hit.resumeSide,
+            answerSide: hit.answerSide,
+            utterance: craftResumeConflictUtterance(hit),
+            resumeExcerpt: hit.resumeExcerpt,
+            source: "heuristic",
+          };
+        }
+      }
+      if (
+        analysis?.conflict &&
+        analysis.severity !== "none" &&
+        [1, 2, 3, 5].includes(analysis.level || 3)
+      ) {
+        signals.resumeConflict = true;
+        signals.resumeConflictLevel = analysis.level || 3;
+        pendingTags.push("authenticity_risk");
+        addSessionTag(session, "authenticity_risk");
+        const record = analysisToRecord(analysis, rt.question.id);
+        if (record) {
+          session.pendingConflictChallenge = record;
+        }
+        rt.resumeConflictProbeCount += 1;
+        rt.followUpCount += 1;
+        session.authenticityChallengeCount =
+          (session.authenticityChallengeCount || 0) + 1;
+        return {
+          action: "FOLLOW_UP_PITFALL",
+          utterance:
+            analysis.utterance ||
+            RESUME_CONFLICT_GENERIC_UTTERANCE,
+          questionId: rt.question.id,
+          followUpCount: rt.followUpCount,
+          hintCount: rt.hintCount,
+          reframeCount: rt.reframeCount,
+          signals: { ...signals, resumeConflictSeverity: "challenge" },
+          pendingTags,
+          verbatim: true,
+        };
+      }
+    }
+
+    return advance(session, "ASK", "", signals, pendingTags);
   }
 
   // —— 全局政策优先（先于重追问）——
@@ -1162,6 +1240,20 @@ export function decideTurn(input: {
       if (outcome === "memory_fuzzy") {
         pendingTags.push("authenticity_risk");
         addSessionTag(session, "authenticity_risk");
+      }
+      // 自我介绍阶段的冲突解释：收口后进入主问题，不再就介绍死磕
+      if (rt.question.isSelfIntro || rt.question.phase === "self_intro") {
+        if (input.answer.trim()) {
+          const prev = (session.selfIntroText || "").trim();
+          const cur = input.answer.trim();
+          session.selfIntroText =
+            !prev || cur.length >= prev.length ? cur : `${prev} ${cur}`.trim();
+        }
+        enrichDigsWithSelfIntro(session);
+        const decision = advance(session, "ASK", note, signals, pendingTags);
+        decision.utterance = `${note}${decision.utterance.replace(/^好[，,。. ]?/, "")}`;
+        decision.verbatim = true;
+        return decision;
       }
       if (input.answer.trim().length >= 40 && outcome === "ok_incomplete_resume") {
         // 解释可接受 → 推进，不重复死磕

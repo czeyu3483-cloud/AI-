@@ -19,10 +19,17 @@ const OFF_TOPIC_CORRECTIONS = [
     `你这个回答好像有点偏了，我想了解的是${focus}，你能重新说一下吗？`,
   (focus: string) =>
     `不好意思打断一下，我们回到刚才那个问题，我问的是${focus}。`,
+  (focus: string) =>
+    `先停一下——我们回到题目：${focus}。你从这个点接着说。`,
+  (focus: string) =>
+    `这段有点跑远了。我真正想听的是${focus}，请直接回答这一点。`,
+  (focus: string) =>
+    `我们先把话题拉回来：关于${focus}，你怎么看？`,
 ];
 
 export function pickOffTopicCorrection(focus: string, seed = 0): string {
-  const line = OFF_TOPIC_CORRECTIONS[Math.abs(seed) % OFF_TOPIC_CORRECTIONS.length]!;
+  const i = Math.abs((seed * 17 + (Date.now() % 503)) | 0) % OFF_TOPIC_CORRECTIONS.length;
+  const line = OFF_TOPIC_CORRECTIONS[i]!;
   return line(focus);
 }
 
