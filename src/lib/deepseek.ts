@@ -304,11 +304,51 @@ export async function structureResume(
     projects: [],
     parseMeta: { source, warnings: [] },
   };
+
+  // 无 LLM 时的轻量启发式：从原文抽技能/项目，保证业务面阶段题能 dig 简历
+  const heuristicFill = (profile: ResumeProfile): ResumeProfile => {
+    if ((profile.skills?.length || 0) === 0) {
+      const skillHits = [
+        "TypeScript",
+        "JavaScript",
+        "React",
+        "Vue",
+        "Next.js",
+        "Node.js",
+        "MySQL",
+        "PostgreSQL",
+        "Redis",
+        "Python",
+        "Java",
+        "Go",
+      ].filter((s) => new RegExp(s.replace(".", "\\."), "i").test(rawText));
+      profile.skills = skillHits;
+    }
+    if ((profile.projects?.length || 0) === 0) {
+      const lines = rawText.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+      const projects: ResumeProfile["projects"] = [];
+      for (const line of lines) {
+        const m = line.match(
+          /(?:项目[:：]\s*)?([^\n]{2,24}?(?:平台|系统|中台|项目|网站|App|应用))/,
+        );
+        if (m?.[1] && !/技能|教育|经历/.test(m[1])) {
+          const name = m[1].replace(/^[-·•\s]+/, "").slice(0, 24);
+          if (!projects.some((p) => p.name === name)) {
+            projects.push({ name, highlights: [], stack: profile.skills.slice(0, 4) });
+          }
+        }
+        if (projects.length >= 2) break;
+      }
+      profile.projects = projects;
+    }
+    if (!profile.summary) profile.summary = rawText.slice(0, 180);
+    return profile;
+  };
+
   const c = client();
   if (!c) {
     base.parseMeta.warnings.push("未配置 DeepSeek，无法做 AI 总结");
-    base.summary = rawText.slice(0, 180);
-    return base;
+    return heuristicFill(base);
   }
   try {
     const completion = await c.chat.completions.create({
@@ -361,7 +401,7 @@ export async function structureResume(
         }))
       : [];
 
-    return {
+    const profile: ResumeProfile = {
       ...base,
       name: json.name ? String(json.name) : undefined,
       summary: json.summary ? String(json.summary) : undefined,
@@ -370,12 +410,13 @@ export async function structureResume(
       experiences,
       projects,
     };
+    // 即使模型漏抽项目，也用原文兜底，保证简历地图可用
+    return heuristicFill(profile);
   } catch (e) {
     base.parseMeta.warnings.push(
       e instanceof Error ? `AI 总结失败：${e.message}` : "AI 总结失败，已回退原文",
     );
-    base.summary = rawText.slice(0, 180);
-    return base;
+    return heuristicFill(base);
   }
 }
 
@@ -651,13 +692,28 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
   const resumeRawExcerpt = (session.resume?.rawText || "").slice(0, 1200);
   const integrityRiskFlag =
     integrityBreach ||
-    authenticityRisk ||
     resumeConflicts.some(
       (c) =>
-        c.level <= 2 ||
         c.explainOutcome === "chaotic_integrity_risk" ||
-        c.explainOutcome === "admits_fabricate",
-    );
+        c.explainOutcome === "admits_fabricate" ||
+        (c.level === 1 && c.explainOutcome !== "ok_incomplete_resume"),
+    ) ||
+    (authenticityRisk &&
+      resumeConflicts.some(
+        (c) =>
+          c.explainOutcome !== "ok_incomplete_resume" &&
+          c.explainOutcome !== "memory_fuzzy",
+      ));
+
+  // 解释为「简历表述不完整」的冲突不再压低综合建议
+  const unresolvedAuthRisk =
+    authenticityRisk &&
+    (resumeConflicts.length === 0 ||
+      resumeConflicts.some(
+        (c) =>
+          c.explainOutcome !== "ok_incomplete_resume" &&
+          c.explainOutcome !== "memory_fuzzy",
+      ));
 
   const baseSummary = integrityBreach
     ? `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}），因简历/经历诚信问题提前结束。` +
@@ -683,7 +739,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
 
   const recommendation = deriveRecommendation({
     integrityBreach,
-    authenticityRisk,
+    authenticityRisk: unresolvedAuthRisk,
     vague,
     dimensions,
     codingResults,
@@ -692,7 +748,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
   const nextRoundAdvice = buildNextRoundAdvice({
     trackId,
     integrityBreach,
-    authenticityRisk,
+    authenticityRisk: unresolvedAuthRisk,
     vague,
     codingResults,
     recommendation,
