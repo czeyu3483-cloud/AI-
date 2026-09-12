@@ -30,10 +30,16 @@ export async function GET(
     y += 2;
   };
 
-  write("Mock Interview Report - R&D Pressure", 16);
+  const trackLabel = session.trackId === "hr_final" ? "HR Final" : "Biz";
+  write(`Mock Interview Report - R&D ${trackLabel}`, 16);
   write(`Session: ${session.id}`);
   write(`Created: ${session.createdAt}`);
-  write("Role: rd_general | Style: pressure");
+  write(
+    `Role: rd_general | Track: ${session.trackId || "biz"} | Style: pressure`,
+  );
+  if (session.feedback.vagueInsufficientDetail) {
+    write("Note: answers were not detailed enough (vague / insufficient detail).");
+  }
   write("Overall:");
   write(session.feedback.overallSummary);
   for (const q of session.feedback.perQuestion) {

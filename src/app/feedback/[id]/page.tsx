@@ -39,7 +39,8 @@ export default function FeedbackPage() {
         <p className="text-sm tracking-[0.18em] text-[var(--accent)]">FEEDBACK</p>
         <h1 className="text-3xl font-semibold">面试复盘报告</h1>
         <p className="text-sm text-[var(--muted)]">
-          研发岗 · 压力面 · 仅供练习参考，不代表录用结论
+          研发岗 ·{" "}
+          {feedback?.trackId === "hr_final" ? "HR终面" : "业务面"} · 压力面 · 仅供练习参考，不代表录用结论
         </p>
       </header>
 
@@ -53,6 +54,15 @@ export default function FeedbackPage() {
               <h2 className="mb-2 text-lg font-medium text-[var(--danger)]">诚信红线</h2>
               <p className="leading-7 text-[var(--muted)]">
                 本场因简历/经历真实性问题结束。诚信缺口属于严重问题，不应给出高分评价。
+              </p>
+            </section>
+          ) : null}
+
+          {feedback.vagueInsufficientDetail ? (
+            <section className="rounded-2xl border border-[var(--accent-2)]/40 bg-[var(--accent-2)]/10 p-5">
+              <h2 className="mb-2 text-lg font-medium">细节不足</h2>
+              <p className="leading-7 text-[var(--muted)]">
+                本场多次回答偏空泛/笼统，整体回答不够细致。请用具体动作、场景与可验证结果把经历讲扎实。
               </p>
             </section>
           ) : null}

@@ -1,4 +1,4 @@
-import type { StyleId } from "./types";
+import type { StyleId, TrackId } from "./types";
 
 const INTERVIEWER_NAMES = ["王老师", "李老师", "张老师", "陈老师", "刘老师", "赵老师"];
 
@@ -24,12 +24,17 @@ export function buildOpeningLine(input: {
   candidateName?: string;
   interviewerName: string;
   questionCount: number;
+  trackId?: TrackId;
 }): string {
   const who = addressCandidate(input.candidateName);
   const hello = who === "同学" ? "同学你好" : `${who}你好`;
+  const focus =
+    input.trackId === "hr_final"
+      ? "主要了解你的动机、协作方式和职业规划，轻松把经历讲清楚就行"
+      : "主要了解你的项目经历和基础功底，你把思路讲清楚就行";
   return (
     `${hello}，我是今天的面试官${input.interviewerName}。` +
-    `今天大概聊 ${input.questionCount} 个问题，主要了解你的项目经历和基础功底，你把思路讲清楚就行。` +
+    `今天大概聊 ${input.questionCount} 个问题，${focus}。` +
     `我们先开始。`
   );
 }

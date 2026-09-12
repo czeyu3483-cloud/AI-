@@ -6,8 +6,13 @@ import {
   POLICY_THINKING_WAIT,
   PRESSURE_CONFIG,
   SKIP_SOFT_UTTERANCE,
+  VAGUE_PROBE_UTTERANCE,
+  VAGUE_PROBE_UTTERANCE_HR,
+  VAGUE_SOFT_SKIP_UTTERANCE,
+  configForTrack,
 } from "./config";
 import { matchReplyBank } from "./replyBank";
+import { HR_QUESTIONS } from "./questions/hr";
 import { RD_QUESTIONS } from "./questions/rd";
 import type {
   AbilityTag,
@@ -18,19 +23,51 @@ import type {
   ResumeProfile,
   RoleId,
   StyleId,
+  TrackId,
   TurnDecision,
   TurnSignals,
 } from "./types";
 
-export function assertDemoSelection(roleId: RoleId, styleId: StyleId) {
+export function assertDemoSelection(roleId: RoleId, styleId: StyleId, trackId?: TrackId) {
   if (roleId !== "rd_general") throw new Error("当前 Demo 仅开放研发岗（其他岗位暂不可选）");
   if (styleId !== "pressure") throw new Error("当前 Demo 仅开放压力面（其他风格暂不可选）");
+  if (trackId && trackId !== "biz" && trackId !== "hr_final") {
+    throw new Error("当前 Demo 仅开放业务面或 HR终面");
+  }
 }
 
-export function buildQuestionQueue(resume?: ResumeProfile): Question[] {
+function addSessionTag(session: InterviewSession, tag: AbilityTag) {
+  session.sessionTags = Array.from(new Set([...(session.sessionTags || []), tag]));
+}
+
+export function buildQuestionQueue(
+  resume?: ResumeProfile,
+  trackId: TrackId = "biz",
+): Question[] {
+  const cfg = configForTrack(trackId);
+
+  if (trackId === "hr_final") {
+    const fromResume: Question[] = (resume?.projects || []).slice(0, 1).map((p, idx) => ({
+      id: `hr_resume_proj_${idx + 1}`,
+      roleId: "rd_general" as const,
+      trackId: "hr_final" as const,
+      prompt: `结合你简历里的「${p.name}」：你在团队里更常扮演什么角色？和别人协作时你最在意什么？`,
+      intent: "hr_resume_collab",
+      followUpHints: ["协作方式", "冲突", ...(p.highlights || [])],
+      rubrics: [
+        { dimension: "collaboration", weight: 0.5, good: "角色与协作清晰", poor: "空泛表态" },
+        { dimension: "fit", weight: 0.5, good: "价值观可落地", poor: "套话" },
+      ],
+      referencePoints: [],
+      fromResume: true,
+    }));
+    return [...fromResume, ...HR_QUESTIONS].slice(0, cfg.questionsPerSession);
+  }
+
   const fromProjects: Question[] = (resume?.projects || []).slice(0, 2).map((p, idx) => ({
     id: `resume_proj_${idx + 1}`,
     roleId: "rd_general" as const,
+    trackId: "biz" as const,
     prompt: `看你简历里的「${p.name}」：你个人具体负责哪一块？当时最关键的技术取舍是什么？`,
     intent: "resume_ownership_tradeoff",
     followUpHints: ["个人贡献", "失败方案", "边界", ...(p.highlights || [])],
@@ -44,6 +81,7 @@ export function buildQuestionQueue(resume?: ResumeProfile): Question[] {
   const fromExp: Question[] = (resume?.experiences || []).slice(0, 1).map((e, idx) => ({
     id: `resume_exp_${idx + 1}`,
     roleId: "rd_general" as const,
+    trackId: "biz" as const,
     prompt: `你在${e.org || "上一段经历"}担任${e.title || "相关角色"}时，印象最深的一次排查或取舍是什么？你具体做了什么？`,
     intent: "resume_experience_depth",
     followUpHints: ["职责边界", ...(e.highlights || [])],
@@ -54,7 +92,7 @@ export function buildQuestionQueue(resume?: ResumeProfile): Question[] {
     referencePoints: [],
     fromResume: true,
   }));
-  return [...fromProjects, ...fromExp, ...RD_QUESTIONS].slice(0, PRESSURE_CONFIG.questionsPerSession);
+  return [...fromProjects, ...fromExp, ...RD_QUESTIONS].slice(0, cfg.questionsPerSession);
 }
 
 export function createRuntimes(queue: Question[]): QuestionRuntime[] {
@@ -64,6 +102,7 @@ export function createRuntimes(queue: Question[]): QuestionRuntime[] {
     hintCount: 0,
     reframeCount: 0,
     answerRequestCount: 0,
+    vagueFollowUpCount: 0,
     userAnswers: [],
     tags: [],
   }));
@@ -81,8 +120,29 @@ function pressureOf(rt: QuestionRuntime) {
 export function craftGroundedFollowUp(
   answer: string,
   action: InterviewAction,
+  trackId: TrackId = "biz",
 ): string {
   const text = answer.trim();
+
+  if (trackId === "hr_final") {
+    if (/团队|协作|同学|同事|沟通/.test(text)) {
+      return "当时分歧具体在哪？你做了哪一步沟通？";
+    }
+    if (/压力|加班|紧张|熬夜|节奏/.test(text)) {
+      return "那种节奏下你具体怎么拆优先级、怎么调整状态？";
+    }
+    if (/兴趣|喜欢|想做|动机|为什么/.test(text)) {
+      return "这个兴趣从哪件事开始的？最近一次能证明它的经历是什么？";
+    }
+    if (/规划|三年|成长|上手/.test(text)) {
+      return "前三个月你会先补哪一块？怎么衡量自己上手了？";
+    }
+    if (text.length > 0 && text.length < 80) {
+      const clip = text.replace(/\s+/g, "").slice(0, 24);
+      return `你说「${clip}」——能举一个具体场景吗？你当时怎么想、怎么做的？`;
+    }
+    return "能再落到一件具体事上吗？你个人做了什么？";
+  }
 
   // 后说的职责优先（话题转移）：代码/编写压过纯「设计」
   if (/代码|编写|写代码|coding|实现(?!方案)/i.test(text)) {
@@ -146,6 +206,34 @@ function detectRambling(text: string) {
   return text.length > 450 || thenCount >= 6 || (text.length > 280 && (thenCount >= 4 || filler));
 }
 
+/** 空泛 / 笼统 / 不够细致：缺具体动作、数据、场景 */
+export function isVagueAnswer(answer: string): boolean {
+  const text = answer.trim();
+  if (!text) return false;
+
+  const vaguePhrase =
+    /大概|反正就|就是那个|然后那个|随便|差不多|之类的|等等吧|整体上|基本上就是|做了一些|参与了一下|负责相关|比较笼统|不太细|说不太清|没什么特别|一般般|还行吧|感觉还行|就那样|空泛|笼统|不太清楚细节|主要是帮忙|跟着做/.test(
+      text,
+    );
+
+  const hasConcrete =
+    /\d+%|\d+\s*ms|\d+\s*秒|P95|QPS|接口|SQL|索引|缓存|回滚|根因|我独立|我负责.{0,8}(模块|接口|页面|服务)|具体(做了|改了|查了)|第一步|验证/.test(
+      text,
+    );
+
+  // 短而不落地，或套话多、几乎无「我」的动作
+  if (text.length > 0 && text.length < 40 && !hasConcrete) return true;
+  if (vaguePhrase && !hasConcrete) return true;
+  if (text.length < 100 && vaguePhrase) return true;
+
+  const we = (text.match(/我们/g) || []).length;
+  const i = (text.match(/我(?!们)/g) || []).length;
+  if (text.length >= 40 && text.length <= 160 && we >= 2 && i === 0 && !hasConcrete) {
+    return true;
+  }
+  return false;
+}
+
 export function detectSignals(answer: string, silenceStuck?: boolean): TurnSignals {
   const text = answer.trim();
   const signals: TurnSignals = {};
@@ -197,6 +285,9 @@ export function detectSignals(answer: string, silenceStuck?: boolean): TurnSigna
     signals.rambling = true;
     if (!signals.tooLong) signals.tooLong = "timeout";
   }
+
+  if (isVagueAnswer(text)) signals.vague = true;
+
   return signals;
 }
 
@@ -241,6 +332,44 @@ function advance(
   };
 }
 
+/** 空泛：最多 1 次短探，再软换题并打标；诚信红线仍走结束路径 */
+function handleVagueCap(
+  session: InterviewSession,
+  rt: QuestionRuntime,
+  signals: TurnSignals,
+  pendingTags: AbilityTag[],
+  preferredUtterance?: string,
+): TurnDecision | null {
+  if (!signals.vague) return null;
+  const maxVague = session.config.maxVagueFollowUpsPerQuestion ?? 1;
+  const trackId = session.trackId || "biz";
+
+  if (rt.vagueFollowUpCount >= maxVague) {
+    pendingTags.push("vague_insufficient_detail");
+    addSessionTag(session, "vague_insufficient_detail");
+    rt.tags = Array.from(new Set([...rt.tags, "vague_insufficient_detail"]));
+    return advance(session, "SKIP_SOFT", VAGUE_SOFT_SKIP_UTTERANCE, signals, pendingTags);
+  }
+
+  rt.vagueFollowUpCount += 1;
+  rt.followUpCount += 1;
+  pendingTags.push("vague_insufficient_detail");
+  addSessionTag(session, "vague_insufficient_detail");
+  const probe =
+    preferredUtterance ||
+    (trackId === "hr_final" ? VAGUE_PROBE_UTTERANCE_HR : VAGUE_PROBE_UTTERANCE);
+  return {
+    action: "FOLLOW_UP_OWNERSHIP",
+    utterance: probe,
+    questionId: rt.question.id,
+    followUpCount: rt.followUpCount,
+    hintCount: rt.hintCount,
+    reframeCount: rt.reframeCount,
+    signals,
+    pendingTags,
+  };
+}
+
 export function decideTurn(input: {
   session: InterviewSession;
   answer: string;
@@ -248,6 +377,7 @@ export function decideTurn(input: {
 }): TurnDecision {
   const { session } = input;
   const cfg = session.config;
+  const trackId = session.trackId || "biz";
   const rt = session.runtimes[session.currentIndex];
   if (!rt) {
     return {
@@ -337,6 +467,16 @@ export function decideTurn(input: {
       bankHit.action ||
       (signals.metaQuestionType || signals.askedForHint ? "FORMULA_DEFLECT" : "FOLLOW_UP_OWNERSHIP");
 
+    // 空泛 + 追问类命中：计入短探上限，不要无限 FOLLOW_UP
+    if (action.startsWith("FOLLOW_UP") && signals.vague) {
+      const capped = handleVagueCap(session, rt, signals, pendingTags, bankHit.reply);
+      if (capped) {
+        capped.verbatim = true;
+        capped.signals = { ...capped.signals, replyBankId: bankHit.id };
+        return capped;
+      }
+    }
+
     if (action.startsWith("FOLLOW_UP") && pressureOf(rt) < cfg.maxPressurePerQuestion) {
       rt.followUpCount += 1;
     }
@@ -388,6 +528,7 @@ export function decideTurn(input: {
   }
 
   // 4) 跑题/元问题：HR 或 领导/面试环节不好说
+  // 注意：HR终面轨道仍用同一口径挡薪资八卦，不因轨道名放开
   if (signals.metaQuestionType) {
     return {
       action: "FORMULA_DEFLECT",
@@ -439,11 +580,17 @@ export function decideTurn(input: {
     return advance(session, "SKIP_SOFT", SKIP_SOFT_UTTERANCE, signals, pendingTags);
   }
 
+  // 6) 空泛/笼统：至多 1 次短探，再软跳过（不无限 FOLLOW_UP）
+  {
+    const capped = handleVagueCap(session, rt, signals, pendingTags);
+    if (capped) return capped;
+  }
+
   if (signals.tooShort && pressureOf(rt) < cfg.maxPressurePerQuestion) {
     rt.followUpCount += 1;
     return {
       action: "FOLLOW_UP_OWNERSHIP",
-      utterance: craftGroundedFollowUp(input.answer, "FOLLOW_UP_OWNERSHIP"),
+      utterance: craftGroundedFollowUp(input.answer, "FOLLOW_UP_OWNERSHIP", trackId),
       questionId: rt.question.id,
       followUpCount: rt.followUpCount,
       hintCount: rt.hintCount,
@@ -457,7 +604,7 @@ export function decideTurn(input: {
     pendingTags.push("surface_knowledge_no_practice");
     return {
       action: "FOLLOW_UP_PITFALL",
-      utterance: craftGroundedFollowUp(input.answer, "FOLLOW_UP_PITFALL"),
+      utterance: craftGroundedFollowUp(input.answer, "FOLLOW_UP_PITFALL", trackId),
       questionId: rt.question.id,
       followUpCount: rt.followUpCount,
       hintCount: rt.hintCount,
@@ -483,10 +630,14 @@ export function decideTurn(input: {
       "FOLLOW_UP_OWNERSHIP",
       "FOLLOW_UP_TRADEOFF",
     ];
-    const action = actions[Math.floor(Math.random() * 3)]!;
+    // HR终面少做架构/边界硬刨，偏 ownership
+    const action =
+      trackId === "hr_final"
+        ? "FOLLOW_UP_OWNERSHIP"
+        : actions[Math.floor(Math.random() * 3)]!;
     return {
       action,
-      utterance: craftGroundedFollowUp(input.answer, action),
+      utterance: craftGroundedFollowUp(input.answer, action, trackId),
       questionId: rt.question.id,
       followUpCount: rt.followUpCount,
       hintCount: rt.hintCount,

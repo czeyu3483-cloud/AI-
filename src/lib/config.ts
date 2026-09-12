@@ -1,4 +1,4 @@
-import type { BehaviorConfig, RoleId, StyleId } from "./types";
+import type { BehaviorConfig, RoleId, StyleId, TrackId } from "./types";
 
 export const DEMO_ROLES: Array<{ id: RoleId; label: string; enabled: boolean }> = [
   { id: "rd_general", label: "研发岗", enabled: true },
@@ -11,6 +11,27 @@ export const DEMO_STYLES: Array<{ id: StyleId; label: string; enabled: boolean }
   { id: "pressure", label: "压力面", enabled: true },
   { id: "calm", label: "平和面", enabled: false },
   { id: "random", label: "随机", enabled: false },
+];
+
+/** 研发岗下第二层选择；目前仅 rd_general 开放 */
+export const DEMO_TRACKS: Array<{
+  id: TrackId;
+  label: string;
+  hint: string;
+  enabled: boolean;
+}> = [
+  {
+    id: "biz",
+    label: "业务面",
+    hint: "技术与项目深挖，偏追问细节与取舍",
+    enabled: true,
+  },
+  {
+    id: "hr_final",
+    label: "HR终面",
+    hint: "适配性、动机、协作与职业规划，少硬核算法/架构",
+    enabled: true,
+  },
 ];
 
 export const PRESSURE_CONFIG: BehaviorConfig = {
@@ -29,9 +50,35 @@ export const PRESSURE_CONFIG: BehaviorConfig = {
   styleChosen: "pressure",
   styleResolved: "pressure",
   tone: "steady_firm",
+  maxVagueFollowUpsPerQuestion: 1,
 };
 
+/** HR终面：语气更软，少硬追问 */
+export const HR_FINAL_CONFIG: BehaviorConfig = {
+  ...PRESSURE_CONFIG,
+  maxFollowUpsPerQuestion: 2,
+  maxPressurePerQuestion: 2,
+  tone: "steady_warm",
+  maxVagueFollowUpsPerQuestion: 1,
+};
+
+export function configForTrack(trackId: TrackId): BehaviorConfig {
+  return trackId === "hr_final" ? { ...HR_FINAL_CONFIG } : { ...PRESSURE_CONFIG };
+}
+
 export const SKIP_SOFT_UTTERANCE = "好，这题我先记下了，我们换一个。";
+
+/** 空泛追问过一次后仍不够细 → 软换题 */
+export const VAGUE_SOFT_SKIP_UTTERANCE =
+  "好，这题我先记下了——细节还可以再补。我们换一个。";
+
+/** 空泛时的唯一一次短探 */
+export const VAGUE_PROBE_UTTERANCE =
+  "这块有点笼统，你具体负责哪一步？结果怎么验证的？";
+
+/** HR 轨道空泛短探（语气更软） */
+export const VAGUE_PROBE_UTTERANCE_HR =
+  "能再具体一点吗？比如你当时怎么想、怎么做的？";
 
 /** 简历/经历明显不实或主动承认乱写时，直接结束 */
 export const INTEGRITY_END_UTTERANCE =

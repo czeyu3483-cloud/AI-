@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { PRESSURE_CONFIG } from "@/lib/config";
+import { configForTrack } from "@/lib/config";
 import { polishUtterance } from "@/lib/deepseek";
 import {
   assertDemoSelection,
@@ -9,18 +9,20 @@ import {
 } from "@/lib/engine";
 import { buildOpeningLine, pickInterviewerName } from "@/lib/persona";
 import { newSessionId, pushEvent, saveSession } from "@/lib/store";
-import type { InterviewSession, ResumeProfile, RoleId, StyleId } from "@/lib/types";
+import type { InterviewSession, ResumeProfile, RoleId, StyleId, TrackId } from "@/lib/types";
 
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as {
       roleId?: RoleId;
       styleId?: StyleId;
+      trackId?: TrackId;
       resume?: ResumeProfile;
     };
     const roleId = body.roleId ?? "rd_general";
     const styleId = body.styleId ?? "pressure";
-    assertDemoSelection(roleId, styleId);
+    const trackId: TrackId = body.trackId === "hr_final" ? "hr_final" : "biz";
+    assertDemoSelection(roleId, styleId, trackId);
 
     const resume = body.resume
       ? {
@@ -31,20 +33,23 @@ export async function POST(req: Request) {
           education: body.resume.education ?? [],
         }
       : undefined;
-    const queue = buildQuestionQueue(resume);
+    const behavior = configForTrack(trackId);
+    const queue = buildQuestionQueue(resume, trackId);
     const runtimes = createRuntimes(queue);
     const interviewerName = pickInterviewerName();
     const opening = buildOpeningLine({
       candidateName: resume?.name,
       interviewerName,
       questionCount: queue.length,
+      trackId,
     });
     const questionDraft = initialAskUtterance(queue[0]!);
     const polished = await polishUtterance({
       action: "ASK",
       draft: questionDraft,
       questionPrompt: queue[0]!.prompt,
-      tone: PRESSURE_CONFIG.tone,
+      tone: behavior.tone,
+      trackId,
     });
     // 开场白保持口语模板，不交给模型改写，避免又冒出「压力面/模拟」等说法
     const utterance = `${opening}${polished.text}`;
@@ -52,7 +57,8 @@ export async function POST(req: Request) {
     const session: InterviewSession = {
       id: newSessionId(),
       roleId,
-      config: { ...PRESSURE_CONFIG },
+      trackId,
+      config: behavior,
       resume,
       queue,
       currentIndex: 0,
@@ -63,10 +69,12 @@ export async function POST(req: Request) {
       events: [],
       createdAt: new Date().toISOString(),
       interviewerName,
+      sessionTags: [],
     };
     pushEvent(session, "start", {
       roleId,
       styleId,
+      trackId,
       mocked: polished.mocked,
       interviewerName,
     });
@@ -80,6 +88,7 @@ export async function POST(req: Request) {
       index: 0,
       total: queue.length,
       config: session.config,
+      trackId,
       mockedLlm: polished.mocked,
       interviewerName,
       candidateName: resume?.name || null,

@@ -1,20 +1,26 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { DEMO_ROLES, DEMO_STYLES, SAMPLE_RESUME } from "@/lib/config";
-import type { ResumeProfile, RoleId, StyleId } from "@/lib/types";
+import { DEMO_ROLES, DEMO_STYLES, DEMO_TRACKS, SAMPLE_RESUME } from "@/lib/config";
+import type { ResumeProfile, RoleId, StyleId, TrackId } from "@/lib/types";
 
 export default function HomePage() {
   const [roleId, setRoleId] = useState<RoleId>("rd_general");
   const [styleId, setStyleId] = useState<StyleId>("pressure");
+  const [trackId, setTrackId] = useState<TrackId>("biz");
   const [resumeText, setResumeText] = useState(SAMPLE_RESUME);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [fileName, setFileName] = useState("");
 
+  const tracksEnabled = roleId === "rd_general";
   const canStart = useMemo(
-    () => roleId === "rd_general" && styleId === "pressure" && Boolean(resumeText.trim()),
-    [roleId, styleId, resumeText],
+    () =>
+      roleId === "rd_general" &&
+      styleId === "pressure" &&
+      (trackId === "biz" || trackId === "hr_final") &&
+      Boolean(resumeText.trim()),
+    [roleId, styleId, trackId, resumeText],
   );
 
   async function extractFileText(file: File) {
@@ -54,7 +60,7 @@ export default function HomePage() {
       const res = await fetch("/api/interview/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ roleId, styleId, resume: current }),
+        body: JSON.stringify({ roleId, styleId, trackId, resume: current }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "开场失败");
@@ -67,6 +73,7 @@ export default function HomePage() {
         index: data.index as number,
         total: data.total as number,
         config: data.config,
+        trackId: (data.trackId as TrackId) || trackId,
         mockedLlm: Boolean(data.mockedLlm),
         interviewerName: (data.interviewerName as string) || "王老师",
         candidateName: (data.candidateName as string) || current.name || "",
@@ -102,7 +109,10 @@ export default function HomePage() {
                 key={role.id}
                 type="button"
                 disabled={!role.enabled}
-                onClick={() => setRoleId(role.id)}
+                onClick={() => {
+                  setRoleId(role.id);
+                  if (role.id !== "rd_general") setTrackId("biz");
+                }}
                 className={`rounded-full border px-4 py-2 text-sm transition ${
                   roleId === role.id && role.enabled
                     ? "border-[var(--accent)] bg-[var(--accent)]/15 text-[var(--accent)]"
@@ -112,6 +122,35 @@ export default function HomePage() {
                 {role.enabled ? role.label : `${role.label}（暂不可选）`}
               </button>
             ))}
+          </div>
+
+          <div className="mt-5 border-t border-[var(--line)] pt-4">
+            <h3 className="mb-2 text-sm font-medium text-[var(--muted)]">面试轨道</h3>
+            <div className="flex flex-wrap gap-2">
+              {DEMO_TRACKS.map((track) => {
+                const enabled = tracksEnabled && track.enabled;
+                return (
+                  <button
+                    key={track.id}
+                    type="button"
+                    disabled={!enabled}
+                    onClick={() => setTrackId(track.id)}
+                    className={`rounded-full border px-4 py-2 text-sm transition ${
+                      trackId === track.id && enabled
+                        ? "border-[var(--accent)] bg-[var(--accent)]/15 text-[var(--accent)]"
+                        : "border-[var(--line)] text-[var(--muted)]"
+                    }`}
+                  >
+                    {enabled ? track.label : `${track.label}（暂不可选）`}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-2 text-xs text-[var(--muted)]">
+              {tracksEnabled
+                ? DEMO_TRACKS.find((t) => t.id === trackId)?.hint
+                : "请先选择研发岗后再选轨道"}
+            </p>
           </div>
         </div>
 
@@ -135,7 +174,9 @@ export default function HomePage() {
             ))}
           </div>
           <p className="mt-3 text-xs text-[var(--muted)]">
-            面试中会追问细节与边界；卡壳时换角度，再不行就换题。开场不会提「压力面」字样。
+            {trackId === "hr_final"
+              ? "HR终面语气更软，少硬核算法/架构刨根；空泛回答不会无限追问。"
+              : "业务面会追问技术细节与边界；卡壳或反复空泛时换题。开场不会提「压力面」字样。"}
           </p>
         </div>
       </section>

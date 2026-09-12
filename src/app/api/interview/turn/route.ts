@@ -55,6 +55,7 @@ export async function POST(req: Request) {
       questionPrompt: q.prompt,
       userAnswer: body.answer,
       tone: session.config.tone,
+      trackId: session.trackId || "biz",
       skipPolish: Boolean(
         decision.verbatim ||
           decision.signals.integrityBreach ||

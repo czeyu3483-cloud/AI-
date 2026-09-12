@@ -1,5 +1,7 @@
 export type RoleId = "rd_general" | "pm" | "ops" | "algo";
 export type StyleId = "pressure" | "calm" | "random";
+/** 研发岗下面试轨道：业务面（技术深挖） / HR终面（适配与动机） */
+export type TrackId = "biz" | "hr_final";
 
 export type AbilityTag =
   | "can_reason_trainable"
@@ -10,7 +12,9 @@ export type AbilityTag =
   | "confident_and_solid"
   | "self_awareness_gap"
   | "weak_independent_problem_solving"
-  | "role_mismatch_suspected";
+  | "role_mismatch_suspected"
+  /** 反复空泛/笼统，细节不足 */
+  | "vague_insufficient_detail";
 
 export type InterviewAction =
   | "ASK"
@@ -46,6 +50,8 @@ export type ResumeProfile = {
 export type Question = {
   id: string;
   roleId: RoleId;
+  /** 所属轨道；缺省视为业务面 */
+  trackId?: TrackId;
   prompt: string;
   intent: string;
   followUpHints: string[];
@@ -70,6 +76,8 @@ export type BehaviorConfig = {
   styleChosen: StyleId;
   styleResolved: "pressure" | "calm";
   tone: "steady_firm" | "steady_warm";
+  /** 空泛追问上限：至多 1 次短探，再软换题 */
+  maxVagueFollowUpsPerQuestion: number;
 };
 
 export type TurnSignals = {
@@ -90,6 +98,8 @@ export type TurnSignals = {
   integrityBreach?: boolean;
   /** 命中 replyBank 条目 id（生产仅 1–30；31–100 待用户提供后再补） */
   replyBankId?: number;
+  /** 回答空泛/笼统/不够细致 */
+  vague?: boolean;
 };
 
 export type QuestionRuntime = {
@@ -98,6 +108,8 @@ export type QuestionRuntime = {
   hintCount: number;
   reframeCount: number;
   answerRequestCount: number;
+  /** 本题已对空泛回答做过的短探次数（上限见 config） */
+  vagueFollowUpCount: number;
   userAnswers: string[];
   tags: AbilityTag[];
 };
@@ -116,14 +128,19 @@ export type FeedbackReport = {
   }>;
   topActions: string[];
   roleId: RoleId;
+  trackId?: TrackId;
   styleResolved: "pressure" | "calm";
   /** 因简历/经历诚信问题结束本场时为 true；与软跳过「不会」不同 */
   integrityBreach?: boolean;
+  /** 本场存在反复空泛、细节不足 */
+  vagueInsufficientDetail?: boolean;
 };
 
 export type InterviewSession = {
   id: string;
   roleId: RoleId;
+  /** 业务面 / HR终面 */
+  trackId: TrackId;
   config: BehaviorConfig;
   resume?: ResumeProfile;
   queue: Question[];
@@ -137,6 +154,8 @@ export type InterviewSession = {
   createdAt: string;
   /** 本场随机面试官称呼，如「王老师」 */
   interviewerName?: string;
+  /** 会话级能力标签（跨题汇总，如 vague_insufficient_detail） */
+  sessionTags?: AbilityTag[];
 };
 
 export type TurnDecision = {

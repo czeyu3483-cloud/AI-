@@ -1,9 +1,11 @@
 import type { Question } from "../types";
 
+/** 业务面题库：技术 / 项目深度 */
 export const RD_QUESTIONS: Question[] = [
   {
     id: "rd_q1",
     roleId: "rd_general",
+    trackId: "biz",
     prompt: "请用两分钟介绍一个你最有代表性的技术项目：背景、你的职责，以及最终结果。",
     intent: "ownership_and_impact",
     followUpHints: ["个人职责边界", "量化结果", "关键取舍"],
@@ -17,6 +19,7 @@ export const RD_QUESTIONS: Question[] = [
   {
     id: "rd_q2",
     roleId: "rd_general",
+    trackId: "biz",
     prompt: "在那个项目里，你做过最重要的一次技术取舍是什么？为什么选它，什么场景下你会不选？",
     intent: "tradeoff",
     followUpHints: ["备选方案", "失效场景"],
@@ -29,6 +32,7 @@ export const RD_QUESTIONS: Question[] = [
   {
     id: "rd_q3",
     roleId: "rd_general",
+    trackId: "biz",
     prompt: "讲一次线上或联调故障：你怎么定位，最终改了什么，如何避免再发生？",
     intent: "debugging",
     followUpHints: ["排查路径", "根因", "防再发"],
@@ -42,6 +46,7 @@ export const RD_QUESTIONS: Question[] = [
   {
     id: "rd_q4",
     roleId: "rd_general",
+    trackId: "biz",
     prompt: "如果需求很急、技术方案还不完整，你会怎么推进并控制风险？",
     intent: "delivery_under_uncertainty",
     followUpHints: ["分期交付", "风险", "沟通"],

@@ -19,6 +19,7 @@ export async function GET(req: Request) {
     index: session.currentIndex,
     total: session.queue.length,
     config: session.config,
+    trackId: session.trackId || "biz",
     status: session.status,
     feedback: session.feedback ?? null,
     lastAction: session.lastAction,
