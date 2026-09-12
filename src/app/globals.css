@@ -51,13 +51,13 @@ button:disabled {
   flex-direction: column;
   align-items: center;
   transform-origin: 50% 100%;
-  animation: dh-breathe 3.6s ease-in-out infinite;
+  animation: none;
 }
 .dh-figure.speaking {
-  animation: dh-breathe 2.4s ease-in-out infinite, dh-nod 2.8s ease-in-out infinite;
+  animation: dh-speak-nod 2.4s ease-in-out infinite;
 }
 .dh-figure.listening {
-  animation: dh-breathe 3.2s ease-in-out infinite;
+  animation: dh-think-nod 4.8s ease-in-out infinite;
 }
 
 .dh-head {
@@ -134,23 +134,54 @@ button:disabled {
   opacity: 0.9;
 }
 
+.dh-bg {
+  filter: blur(2.5px) saturate(0.9) brightness(0.82);
+  transform: scale(1.14);
+}
+
 .dh-photo-wrap {
-  transform-origin: 50% 100%;
-  animation: dh-breathe 3.6s ease-in-out infinite;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  transform-origin: 50% 70%;
+}
+.dh-photo-wrap.idle {
+  animation: dh-idle-sway 6.5s ease-in-out infinite;
 }
 .dh-photo-wrap.speaking {
-  animation: dh-breathe 2.4s ease-in-out infinite, dh-nod 2.8s ease-in-out infinite;
+  animation: dh-speak-nod 2.4s ease-in-out infinite;
 }
 .dh-photo-wrap.listening {
-  animation: dh-breathe 3.2s ease-in-out infinite;
+  animation: dh-think-nod 4.8s ease-in-out infinite;
 }
+
 .dh-photo {
-  border-radius: 0.25rem 0.25rem 0 0;
+  height: 100%;
+  width: 100%;
+  object-fit: cover;
+  object-position: center top;
+  /* 羽化边缘，消掉人像与背景的硬分割线 */
+  -webkit-mask-image: radial-gradient(
+    ellipse 78% 88% at 50% 42%,
+    #000 52%,
+    rgba(0, 0, 0, 0.85) 68%,
+    rgba(0, 0, 0, 0.35) 82%,
+    transparent 100%
+  );
+  mask-image: radial-gradient(
+    ellipse 78% 88% at 50% 42%,
+    #000 52%,
+    rgba(0, 0, 0, 0.85) 68%,
+    rgba(0, 0, 0, 0.35) 82%,
+    transparent 100%
+  );
+  filter: contrast(1.02) saturate(0.96);
   transition: filter 0.25s ease;
 }
 .dh-photo-speak {
-  filter: brightness(1.04) contrast(1.02);
+  filter: contrast(1.03) saturate(0.98) brightness(1.03);
 }
+
 
 .dh-bar {
   display: inline-block;
@@ -170,25 +201,52 @@ button:disabled {
   animation-delay: 0.24s;
 }
 
-@keyframes dh-breathe {
+@keyframes dh-idle-sway {
   0%,
   100% {
-    transform: translateY(0);
+    transform: rotate(0deg);
   }
   50% {
-    transform: translateY(-4px);
+    transform: rotate(0.4deg);
   }
 }
-@keyframes dh-nod {
+@keyframes dh-speak-nod {
+  0%,
+  100% {
+    transform: rotate(0deg) translateY(0);
+  }
+  35% {
+    transform: rotate(-1.2deg) translateY(1px);
+  }
+  70% {
+    transform: rotate(0.8deg) translateY(0);
+  }
+}
+@keyframes dh-think-nod {
   0%,
   100% {
     transform: rotate(0deg);
   }
   40% {
-    transform: rotate(-1.4deg);
+    transform: rotate(-0.9deg);
   }
-  70% {
-    transform: rotate(1deg);
+  55% {
+    transform: rotate(-0.9deg);
+  }
+  85% {
+    transform: rotate(0.3deg);
+  }
+}
+@keyframes dh-breathe {
+  0%,
+  100% {
+    transform: none;
+  }
+}
+@keyframes dh-nod {
+  0%,
+  100% {
+    transform: none;
   }
 }
 @keyframes dh-blink {

@@ -55,6 +55,7 @@ export type Question = {
 
 export type BehaviorConfig = {
   silenceThinkingMs: number;
+  silenceNudgeMs: number;
   silenceStuckMs: number;
   maxFollowUpsPerQuestion: number;
   maxPressurePerQuestion: number;
@@ -106,6 +107,14 @@ export type FeedbackReport = {
   topActions: string[];
   roleId: RoleId;
   styleResolved: "pressure" | "calm";
+  /** 表达与流畅度（语气词、完整度等） */
+  delivery?: {
+    fluencyScore: number;
+    expressionScore: number;
+    fillerCount: number;
+    topFillers: Array<{ word: string; count: number }>;
+    notes: string[];
+  };
 };
 
 export type InterviewSession = {

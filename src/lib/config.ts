@@ -14,8 +14,9 @@ export const DEMO_STYLES: Array<{ id: StyleId; label: string; enabled: boolean }
 ];
 
 export const PRESSURE_CONFIG: BehaviorConfig = {
-  silenceThinkingMs: 900,
-  silenceStuckMs: 4500,
+  silenceThinkingMs: 2000,
+  silenceNudgeMs: 5000,
+  silenceStuckMs: 12000,
   maxFollowUpsPerQuestion: 3,
   maxPressurePerQuestion: 3,
   maxHintsPerQuestion: 0,

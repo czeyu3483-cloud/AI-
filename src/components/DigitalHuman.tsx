@@ -25,28 +25,20 @@ export function DigitalHuman({
               : "border-[var(--line)]"
         }`}
       >
-        {/* 办公室虚化背景 */}
+        {/* 办公室虚化背景：铺满，避免与人像硬切 */}
         <div
-          className="absolute inset-0 bg-cover bg-center"
-          style={{
-            backgroundImage: "url(/interview/office.jpg)",
-            filter: "blur(3px) saturate(0.92) brightness(0.85)",
-            transform: "scale(1.12)",
-          }}
+          className="dh-bg absolute inset-0 bg-cover bg-center"
+          style={{ backgroundImage: "url(/interview/office.jpg)" }}
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-[#0b1220]/88 via-[#0b1220]/28 to-[#0b1220]/15" />
+        <div className="absolute inset-0 bg-gradient-to-t from-[#0b1220]/75 via-[#0b1220]/20 to-transparent" />
 
-        {/* 真人面试官 */}
-        <div
-          className={`relative z-10 mb-0 flex h-full w-full items-end justify-center dh-photo-wrap ${state}`}
-        >
+        {/* 真人面试官：边缘羽化融入背景，不做上下晃动 */}
+        <div className={`dh-photo-wrap absolute inset-0 z-10 ${state}`}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/interview/interviewer.jpg"
             alt={interviewerName || "面试官"}
-            className={`dh-photo h-[92%] w-auto max-w-[92%] object-cover object-top drop-shadow-xl ${
-              state === "speaking" ? "dh-photo-speak" : ""
-            }`}
+            className={`dh-photo ${state === "speaking" ? "dh-photo-speak" : ""}`}
           />
         </div>
 

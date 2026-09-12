@@ -7,6 +7,7 @@ import {
   BARGE_IN_LINE,
   DONT_INTERRUPT_LINE,
   pickFiller,
+  pickNudgeLine,
   shouldBargeIn,
 } from "@/lib/persona";
 import {
@@ -65,15 +66,20 @@ export default function InterviewPage() {
   const audioReadyRef = useRef(false);
   const speakStartedAtRef = useRef(0);
   const doneMsRef = useRef(900);
-  const stuckMsRef = useRef(4500);
+  const stuckMsRef = useRef(12000);
+  const nudgeMsRef = useRef(5000);
+  const nudgeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const nudgedRef = useRef(false);
 
   const progress = useMemo(() => `${Math.min(index + 1, total)} / ${total}`, [index, total]);
 
   function clearTimers() {
     if (stuckTimer.current) clearTimeout(stuckTimer.current);
     if (doneTimer.current) clearTimeout(doneTimer.current);
+    if (nudgeTimer.current) clearTimeout(nudgeTimer.current);
     stuckTimer.current = null;
     doneTimer.current = null;
+    nudgeTimer.current = null;
   }
 
   function stopRecognition() {
@@ -88,12 +94,50 @@ export default function InterviewPage() {
     setListening(false);
   }
 
-  function resetStuckTimer() {
+  function clearSilenceWatchers() {
     if (stuckTimer.current) clearTimeout(stuckTimer.current);
-    if (speakingRef.current || busyRef.current || listeningRef.current) return;
+    if (nudgeTimer.current) clearTimeout(nudgeTimer.current);
+    stuckTimer.current = null;
+    nudgeTimer.current = null;
+  }
+
+  /** 问完后：5 秒无说话提醒；更久仍无说话则追问/换题。有内容时不走这条。 */
+  function armSilenceWatchers() {
+    clearSilenceWatchers();
+    if (speakingRef.current || busyRef.current) return;
+    if (answerBuf.current.trim()) return;
+
+    nudgeTimer.current = setTimeout(() => {
+      if (busyRef.current || speakingRef.current || answerBuf.current.trim()) return;
+      if (nudgedRef.current) return;
+      nudgedRef.current = true;
+      void (async () => {
+        const line = pickNudgeLine(boot?.config.styleResolved || "pressure");
+        setStatus(line);
+        speakingRef.current = true;
+        setAvatar("speaking");
+        try {
+          await speakRaw(line);
+        } catch {
+          // ignore
+        } finally {
+          speakingRef.current = false;
+          setAvatar("listening");
+          setStatus("继续想就行，准备好了直接说");
+          void startListening({ continuous: true, keepBuffer: true });
+          armSilenceWatchers();
+        }
+      })();
+    }, nudgeMsRef.current);
+
     stuckTimer.current = setTimeout(() => {
+      if (busyRef.current || speakingRef.current || answerBuf.current.trim()) return;
       void submitTurn("", true);
     }, stuckMsRef.current);
+  }
+
+  function resetStuckTimer() {
+    armSilenceWatchers();
   }
 
   async function speakRaw(text: string): Promise<void> {
@@ -160,6 +204,7 @@ export default function InterviewPage() {
     // 不清掉识别：播报期间继续听，方便提醒别抢话（依赖回声消除）
     answerBuf.current = "";
     bargedRef.current = false;
+    nudgedRef.current = false;
     setInterim("");
     wantListenRef.current = true;
     if (audioReadyRef.current) {
@@ -244,8 +289,10 @@ export default function InterviewPage() {
       setIndex(data.index);
       setTotal(data.total);
       setInterviewerName(data.interviewerName || "王老师");
-      doneMsRef.current = data.config.silenceThinkingMs ?? 900;
-      stuckMsRef.current = data.config.silenceStuckMs ?? 4500;
+      doneMsRef.current = data.config.silenceThinkingMs ?? 2000;
+      nudgeMsRef.current = data.config.silenceNudgeMs ?? 5000;
+      stuckMsRef.current = data.config.silenceStuckMs ?? 12000;
+      nudgedRef.current = false;
       lastUtteranceRef.current = data.utterance;
       setStatus("点一下下方按钮，开启语音（浏览器要手动授权声音）");
     }
@@ -298,6 +345,7 @@ export default function InterviewPage() {
     setFallbackText("");
     answerBuf.current = "";
     bargedRef.current = false;
+    nudgedRef.current = false;
     clearTimers();
     stopRecognition();
 
@@ -468,12 +516,15 @@ export default function InterviewPage() {
       }
       if (finalChunk) {
         answerBuf.current += finalChunk;
+        clearSilenceWatchers();
+        nudgedRef.current = false;
         // 一句一句先存下；短停顿后判定说完
         scheduleDoneSubmit();
         void maybeBargeIn(answerBuf.current);
       } else if (live) {
-        // 还在说：取消「说完」计时
+        // 还在说：取消「说完」计时，并取消久静默追问
         if (doneTimer.current) clearTimeout(doneTimer.current);
+        clearSilenceWatchers();
       }
       setInterim(`${answerBuf.current}${live}`.trim());
       if (stuckTimer.current) clearTimeout(stuckTimer.current);
@@ -536,10 +587,13 @@ export default function InterviewPage() {
       recognition.start();
       listeningRef.current = true;
       setListening(true);
+      if (!answerBuf.current.trim() && !speakingRef.current) {
+        armSilenceWatchers();
+      }
     } catch {
       setShowTextFallback(true);
       setError("语音识别起不来，先用文字答吧");
-      resetStuckTimer();
+      armSilenceWatchers();
     }
   }
 
@@ -594,7 +648,7 @@ export default function InterviewPage() {
         <p className="text-xs tracking-[0.2em] text-[var(--muted)]">语音面试</p>
         <h1 className="mt-2 text-2xl font-semibold">和{interviewerName}聊聊</h1>
         <p className="mt-2 text-sm text-[var(--muted)]">
-          听完再答 · 说完稍停会自动接话 · 讲得太笼统时可能会插一句
+          听完再答 · 说完约两秒停顿会接话 · 久不说话会提醒，再沉默会追问或换题
         </p>
       </header>
 

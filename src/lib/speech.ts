@@ -13,13 +13,17 @@ export async function fetchTtsBlob(text: string): Promise<Blob> {
   return res.blob();
 }
 
+/** 浏览器兜底 TTS：优先男声，匹配真人男面试官 */
 export function pickZhVoice(): SpeechSynthesisVoice | null {
   if (typeof window === "undefined" || !window.speechSynthesis) return null;
   const voices = window.speechSynthesis.getVoices();
   return (
     voices.find(
-      (v) => /zh(-CN|_CN)?/i.test(v.lang) && /female|xiaoxiao|tingting|yaoyao|huihui/i.test(v.name),
+      (v) =>
+        /zh(-CN|_CN)?/i.test(v.lang) &&
+        /male|yunjian|yunxi|yunyang|kangkang|liang|male|男/i.test(v.name),
     ) ||
+    voices.find((v) => /zh(-CN|_CN)?/i.test(v.lang) && !/female|xiaoxiao|xiaoyi|xiaoxuan|女/i.test(v.name)) ||
     voices.find((v) => /zh(-CN|_CN)?/i.test(v.lang)) ||
     null
   );

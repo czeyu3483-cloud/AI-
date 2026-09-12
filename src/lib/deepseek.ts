@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { RED_FLAG_PATTERNS } from "./config";
+import { analyzeSessionDelivery } from "./fluency";
 import type {
   FeedbackReport,
   InterviewAction,
@@ -184,6 +185,17 @@ export async function structureResume(
 }
 
 export async function generateFeedback(session: InterviewSession): Promise<FeedbackReport> {
+
+  const deliveryStats = analyzeSessionDelivery(
+    session.runtimes.map((rt) => ({ questionId: rt.question.id, answers: rt.userAnswers })),
+  ).overall;
+  const delivery = {
+    fluencyScore: deliveryStats.fluencyScore,
+    expressionScore: deliveryStats.expressionScore,
+    fillerCount: deliveryStats.fillerCount,
+    topFillers: deliveryStats.topFillers,
+    notes: deliveryStats.notes,
+  };
   const fallback: FeedbackReport = {
     overallSummary:
       "本场为研发岗压力面模拟。整体完成了主流程；建议继续用项目细节、取舍与边界证明实践深度。本报告不做录用结论。",
@@ -202,6 +214,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
     topActions: ["准备量化结果的项目故事", "每题主动讲清取舍与边界", "用故障复盘练排查路径"],
     roleId: session.roleId,
     styleResolved: session.config.styleResolved,
+    delivery,
   };
 
   const c = client();
@@ -216,13 +229,14 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
         {
           role: "system",
           content:
-            "输出复盘 JSON：{overallSummary, perQuestion:[{questionId,prompt,userAnswer,scores:[{dimension,score,evidence}],tags,improvements}],topActions}。分数1-5。不要宣判通过/不通过。不要 markdown。",
+            "输出复盘 JSON：{overallSummary, perQuestion:[{questionId,prompt,userAnswer,scores:[{dimension,score,evidence}],tags,improvements}],topActions}。分数1-5。不要宣判通过/不通过。不要 markdown。可结合 delivery 里的语气词与流畅度信号写 overallSummary。",
         },
         {
           role: "user",
           content: JSON.stringify({
             roleId: session.roleId,
             style: session.config.styleResolved,
+            delivery,
             items: session.runtimes.map((rt) => ({
               questionId: rt.question.id,
               prompt: rt.question.prompt,
@@ -247,6 +261,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
       topActions: Array.isArray(json.topActions) ? json.topActions.slice(0, 5) : fallback.topActions,
       roleId: session.roleId,
       styleResolved: session.config.styleResolved,
+      delivery,
     };
   } catch {
     return fallback;
