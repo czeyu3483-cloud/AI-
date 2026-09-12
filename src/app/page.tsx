@@ -77,6 +77,8 @@ export default function HomePage() {
         mockedLlm: Boolean(data.mockedLlm),
         interviewerName: (data.interviewerName as string) || "王老师",
         candidateName: (data.candidateName as string) || current.name || "",
+        answerSoftLimitSec: data.answerSoftLimitSec as number | undefined,
+        answerHardLimitSec: data.answerHardLimitSec as number | undefined,
       };
       try {
         sessionStorage.setItem(`interview:${boot.sessionId}`, JSON.stringify(boot));

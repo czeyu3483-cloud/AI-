@@ -43,14 +43,15 @@ export const TRACK_FOCUS: Record<
   },
 };
 
-/** 复盘维度（强/中/弱/风险档） */
+/** 复盘维度（强/中/弱/风险/严重档）；诚信为独立严重类 */
 export type FeedbackDimensionId =
   | "tech_depth"
   | "analysis"
   | "project_authenticity"
   | "communication"
   | "learning_potential"
-  | "culture_fit";
+  | "culture_fit"
+  | "integrity";
 
 export const FEEDBACK_DIMENSIONS: Array<{
   id: FeedbackDimensionId;
@@ -62,32 +63,35 @@ export const FEEDBACK_DIMENSIONS: Array<{
   { id: "communication", label: "沟通表达" },
   { id: "learning_potential", label: "学习潜力" },
   { id: "culture_fit", label: "文化适配" },
+  { id: "integrity", label: "诚信 / 简历真实性" },
 ];
 
-/** 轨道权重（总和 1） */
+/** 轨道权重（总和 1；诚信维度单独加权展示） */
 export const TRACK_DIMENSION_WEIGHTS: Record<
   TrackId,
   Record<FeedbackDimensionId, number>
 > = {
   biz: {
-    tech_depth: 0.28,
-    analysis: 0.18,
-    project_authenticity: 0.28,
-    communication: 0.08,
-    learning_potential: 0.12,
-    culture_fit: 0.06,
+    tech_depth: 0.24,
+    analysis: 0.15,
+    project_authenticity: 0.22,
+    communication: 0.07,
+    learning_potential: 0.1,
+    culture_fit: 0.05,
+    integrity: 0.17,
   },
   hr_final: {
-    tech_depth: 0.06,
-    analysis: 0.1,
-    project_authenticity: 0.14,
-    communication: 0.24,
-    learning_potential: 0.22,
-    culture_fit: 0.24,
+    tech_depth: 0.05,
+    analysis: 0.08,
+    project_authenticity: 0.12,
+    communication: 0.2,
+    learning_potential: 0.18,
+    culture_fit: 0.2,
+    integrity: 0.17,
   },
 };
 
-/** 分数 → 档位：强/中/弱/风险 */
+/** 分数 → 档位：强/中/弱/风险（严重仅诚信红线显式标记） */
 export function scoreToBand(score: number): "强" | "中" | "弱" | "风险" {
   if (score <= 1) return "风险";
   if (score <= 2) return "弱";
@@ -174,6 +178,8 @@ export function polishGlobalPolicyBlock(): string {
     "候选人要思考时间只回「好的」并等待；答太长用「那我们先看下一个问题」换题；" +
     "弄虚作假则让其改扎实简历并结束。若候选人明显不会或反复空泛，简短记下并换题，不要刨根问底。" +
     "只输出最终要对候选人说的一句中文。草稿已写清结束或换题意图时，请保留该意图，不要改成继续追问。" +
+    "禁止机械追加「可以再详细一点」「细节可以补充」「细节还可以再补」等套话；仅当草稿本身在追问空泛细节时才允许类似表述。" +
+    "话术要像真人：灵活、简短、不重复同一句脚本。" +
     "若提供 bankStyle，仅作语气参考，仍以 draft 语义为准。" +
     PROFESSIONAL_TONE_RULES
   );
@@ -184,6 +190,7 @@ export function feedbackPolicyBlock(input: {
   level: CandidateLevel;
   vague: boolean;
   authenticityRisk?: boolean;
+  integrityBreach?: boolean;
 }): string {
   const focus = TRACK_FOCUS[input.trackId];
   const dims = FEEDBACK_DIMENSIONS.map(
@@ -194,7 +201,10 @@ export function feedbackPolicyBlock(input: {
     `本场轨道：${focus.label}。考察重点：${focus.measure.join("、")}。${focus.priorities}` +
     `${depthExpectation(input.level)}` +
     `请按维度给 1-5 分并隐含强/中/弱/风险档（≤1风险 ≤2弱 ≤3中 ≥4强）：${dims}。` +
-    "诚信失败（role_mismatch_suspected）不得给高分。" +
+    "必须包含独立维度「诚信 / 简历真实性」。" +
+    "诚信失败（integrityBreach / role_mismatch_suspected）时：该维度 band 必须为「严重」或「风险」、score=1；" +
+    "其他维度仍须打分（可整体下调），禁止只给结束语而无有用评分。" +
+    "overallSummary 必须点名欺诈/注水严重性。" +
     "不要评价语音流畅度/语气词/表达腔调；表达乱但有内容不算挂。" +
     "区分：不会≠造假；没做过可看迁移；编造才严肃点名。" +
     (input.vague
@@ -202,6 +212,9 @@ export function feedbackPolicyBlock(input: {
       : "") +
     (input.authenticityRisk
       ? "本场已标记 authenticity_risk：overallSummary 必须点名「口述与简历不一致/真实性风险」，项目真实性维度偏低。"
+      : "") +
+    (input.integrityBreach
+      ? "本场 integrityBreach=true：诚信维度标严重，并在总结中明确欺诈严重性。"
       : "")
   );
 }

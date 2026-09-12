@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { configForTrack } from "@/lib/config";
+import { answerLimitsForAction, configForTrack } from "@/lib/config";
 import { polishUtterance } from "@/lib/deepseek";
 import {
   assertDemoSelection,
@@ -69,6 +69,13 @@ export async function POST(req: Request) {
     });
     // 开场白保持口语模板，不交给模型改写，避免又冒出「压力面/模拟」等说法
     const utterance = `${opening}${polished.text}`;
+    const limits = answerLimitsForAction({
+      action: "ASK",
+      question: queue[0],
+      utterance,
+      softSec: cfg.answerSoftLimitSec,
+      hardSec: cfg.answerHardLimitSec,
+    });
 
     const session: InterviewSession = {
       id: newSessionId(),
@@ -87,6 +94,7 @@ export async function POST(req: Request) {
       createdAt: new Date().toISOString(),
       interviewerName,
       sessionTags: [],
+      authenticityChallengeCount: 0,
     };
     pushEvent(session, "start", {
       roleId,
@@ -111,6 +119,8 @@ export async function POST(req: Request) {
       mockedLlm: polished.mocked,
       interviewerName,
       candidateName: resume?.name || null,
+      answerSoftLimitSec: limits.answerSoftLimitSec,
+      answerHardLimitSec: limits.answerHardLimitSec,
     });
   } catch (e) {
     return NextResponse.json(

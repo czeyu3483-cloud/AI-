@@ -22,6 +22,8 @@ type BootState = {
   mockedLlm?: boolean;
   interviewerName?: string;
   candidateName?: string;
+  answerSoftLimitSec?: number;
+  answerHardLimitSec?: number;
 };
 
 export default function InterviewPage() {
@@ -44,6 +46,8 @@ export default function InterviewPage() {
   const [asrSupported, setAsrSupported] = useState(true);
   const [interviewerName, setInterviewerName] = useState("王老师");
   const [interviewEnded, setInterviewEnded] = useState(false);
+  const [answerRemainSec, setAnswerRemainSec] = useState<number | null>(null);
+  const [answerSoftHit, setAnswerSoftHit] = useState(false);
 
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -61,8 +65,74 @@ export default function InterviewPage() {
   const interviewEndedRef = useRef(false);
   /** True after final transcript was handed to submitTurn. */
   const submittedRef = useRef(false);
+  const softLimitRef = useRef<number | null>(null);
+  const hardLimitRef = useRef<number | null>(null);
+  const listenStartedAtRef = useRef<number | null>(null);
+  const answerTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const softNudgeSpokenRef = useRef(false);
+  const submitTurnRef = useRef<(text: string, silenceStuck?: boolean) => Promise<void>>(
+    async () => undefined,
+  );
 
   const progress = useMemo(() => `${Math.min(index + 1, total)} / ${total}`, [index, total]);
+
+  function clearAnswerTimer() {
+    if (answerTimerRef.current) {
+      clearInterval(answerTimerRef.current);
+      answerTimerRef.current = null;
+    }
+    listenStartedAtRef.current = null;
+    setAnswerRemainSec(null);
+    setAnswerSoftHit(false);
+    softNudgeSpokenRef.current = false;
+  }
+
+  function applyAnswerLimits(soft?: number | null, hard?: number | null) {
+    softLimitRef.current =
+      typeof soft === "number" && soft > 0 ? soft : null;
+    hardLimitRef.current =
+      typeof hard === "number" && hard > 0 ? hard : null;
+  }
+
+  function startAnswerTimer() {
+    clearAnswerTimer();
+    const hard = hardLimitRef.current;
+    const soft = softLimitRef.current;
+    if (!hard && !soft) return;
+    listenStartedAtRef.current = Date.now();
+    const limit = hard || soft || 0;
+    setAnswerRemainSec(limit);
+    setAnswerSoftHit(false);
+    softNudgeSpokenRef.current = false;
+
+    answerTimerRef.current = setInterval(() => {
+      if (!listenStartedAtRef.current) return;
+      if (busyRef.current || interviewEndedRef.current || submittedRef.current) {
+        clearAnswerTimer();
+        return;
+      }
+      const elapsed = (Date.now() - listenStartedAtRef.current) / 1000;
+      const softSec = softLimitRef.current;
+      const hardSec = hardLimitRef.current;
+      const remain = Math.max(0, Math.ceil((hardSec || softSec || 0) - elapsed));
+      setAnswerRemainSec(remain);
+
+      if (softSec && elapsed >= softSec && !softNudgeSpokenRef.current) {
+        softNudgeSpokenRef.current = true;
+        setAnswerSoftHit(true);
+        setStatus("时间差不多了，请收束；到点会自动提交");
+      }
+
+      if (hardSec && elapsed >= hardSec) {
+        clearAnswerTimer();
+        wantListenRef.current = false;
+        const text = answerBuf.current.trim() || "（时间到，作答截止）";
+        stopRecognition();
+        setStatus("时间到，正在提交…");
+        void submitTurnRef.current(text, true);
+      }
+    }, 250);
+  }
 
   function stopRecognition() {
     wantListenRef.current = false;
@@ -75,6 +145,7 @@ export default function InterviewPage() {
     recognitionRef.current = null;
     listeningRef.current = false;
     setListening(false);
+    clearAnswerTimer();
   }
 
   function markInterviewEnded(message?: string) {
@@ -206,6 +277,8 @@ export default function InterviewPage() {
             config: json.config,
             interviewerName: json.interviewerName,
             candidateName: json.candidateName || "",
+            answerSoftLimitSec: json.answerSoftLimitSec,
+            answerHardLimitSec: json.answerHardLimitSec,
           };
         } catch (e) {
           if (!cancelled) {
@@ -221,6 +294,14 @@ export default function InterviewPage() {
       setTotal(data.total);
       setInterviewerName(data.interviewerName || "王老师");
       lastUtteranceRef.current = data.utterance;
+      applyAnswerLimits(
+        data.answerSoftLimitSec ?? data.config?.answerSoftLimitSec,
+        data.answerHardLimitSec ?? data.config?.answerHardLimitSec,
+      );
+      // 仅当开场话术/题目暗示限时时启用（answerLimitsForAction 已过滤）
+      if (data.answerSoftLimitSec == null && data.answerHardLimitSec == null) {
+        applyAnswerLimits(null, null);
+      }
       setStatus("点一下下方按钮，开启语音（浏览器要手动授权声音）");
     }
 
@@ -236,6 +317,7 @@ export default function InterviewPage() {
       recognitionRef.current?.stop();
       audioRef.current?.pause();
       micStreamRef.current?.getTracks().forEach((track) => track.stop());
+      if (answerTimerRef.current) clearInterval(answerTimerRef.current);
     };
   }, []);
 
@@ -288,10 +370,17 @@ export default function InterviewPage() {
       if (typeof data.index === "number") setIndex(data.index);
       if (typeof data.total === "number") setTotal(data.total);
 
+      if (data.answerSoftLimitSec != null || data.answerHardLimitSec != null) {
+        applyAnswerLimits(data.answerSoftLimitSec, data.answerHardLimitSec);
+      } else {
+        applyAnswerLimits(null, null);
+      }
+
       const over = isInterviewOverPayload(data);
       const nextLine = String(data.utterance || "");
 
       if (over) {
+        clearAnswerTimer();
         markInterviewEnded("面试官正在收尾…");
         if (nextLine) {
           try {
@@ -330,6 +419,8 @@ export default function InterviewPage() {
       }
     }
   }
+
+  submitTurnRef.current = submitTurn;
 
   async function maybeBargeIn(partial: string) {
     if (
@@ -415,6 +506,9 @@ export default function InterviewPage() {
     setStatus("正在听你说…再说一次麦克风结束并提交");
     setAvatar("listening");
     setError("");
+    if (!opts?.keepBuffer || !answerTimerRef.current) {
+      startAnswerTimer();
+    }
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
       if (myGen !== recogGenRef.current) return;
@@ -592,6 +686,17 @@ export default function InterviewPage() {
       <DigitalHuman state={avatar} progress={progress} interviewerName={interviewerName} />
 
       <p className="mt-6 max-w-md text-center text-sm leading-6 text-[var(--text)]">{status}</p>
+      {listening && answerRemainSec != null ? (
+        <p
+          className={`mt-2 text-center text-sm ${
+            answerSoftHit ? "text-[var(--danger)]" : "text-[var(--accent-2)]"
+          }`}
+        >
+          {answerSoftHit ? "请收束 · " : "作答剩余 "}
+          {answerRemainSec}s
+          {hardLimitRef.current ? "（到点自动提交）" : ""}
+        </p>
+      ) : null}
       {interim ? (
         <p className="mt-2 max-w-lg text-center text-sm text-[var(--accent-2)]">刚听到：{interim}</p>
       ) : null}

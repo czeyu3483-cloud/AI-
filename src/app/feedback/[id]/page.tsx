@@ -53,9 +53,12 @@ export default function FeedbackPage() {
         <>
           {feedback.integrityBreach ? (
             <section className="rounded-2xl border border-[var(--danger)]/50 bg-[var(--danger)]/10 p-5">
-              <h2 className="mb-2 text-lg font-medium text-[var(--danger)]">诚信红线</h2>
+              <h2 className="mb-2 text-lg font-medium text-[var(--danger)]">
+                诚信红线
+                {feedback.integritySevere ? " · 严重" : ""}
+              </h2>
               <p className="leading-7 text-[var(--muted)]">
-                本场因简历/经历真实性问题结束。诚信缺口属于严重问题，不应给出高分评价。
+                本场因简历/经历真实性问题结束。诚信维单独标为严重；其余维度仍给出参考分（整体下调），便于复盘而非空结束。
               </p>
             </section>
           ) : null}
@@ -85,7 +88,13 @@ export default function FeedbackPage() {
                 {feedback.dimensions.map((d) => (
                   <li key={d.dimension} className="flex flex-wrap items-baseline gap-2">
                     <span className="font-medium">{d.dimension}</span>
-                    <span className="text-[var(--muted)]">
+                    <span
+                      className={
+                        d.band === "严重" || (/诚信/.test(d.dimension) && d.score <= 1)
+                          ? "text-[var(--danger)]"
+                          : "text-[var(--muted)]"
+                      }
+                    >
                       {d.score}/5 · {d.band}
                       {typeof d.weight === "number"
                         ? ` · 权重 ${(d.weight * 100).toFixed(0)}%`

@@ -62,4 +62,32 @@ export const HR_QUESTIONS: Question[] = [
     ],
     referencePoints: ["三年目标", "前三月", "学习方式"],
   },
+  {
+    id: "hr_q5",
+    roleId: "rd_general",
+    trackId: "hr_final",
+    prompt: "你如何看待反馈？讲一次你收到尖锐反馈后怎么消化、怎么改的。",
+    intent: "feedback_receptivity",
+    followUpHints: ["情绪", "行动", "结果"],
+    rubrics: [
+      { dimension: "learning", weight: 0.4, good: "能转化行动", poor: "辩解为主" },
+      { dimension: "communication", weight: 0.3, good: "对齐对方意图", poor: "回避" },
+      { dimension: "self_awareness", weight: 0.3, good: "看见盲区", poor: "全盘否定对方" },
+    ],
+    referencePoints: ["反馈内容", "改动", "复盘"],
+  },
+  {
+    id: "hr_q6",
+    roleId: "rd_general",
+    trackId: "hr_final",
+    prompt: "如果团队方向和你个人兴趣不完全一致，你会怎么平衡？举个例子更好。",
+    intent: "priority_alignment",
+    followUpHints: ["取舍", "沟通", "承诺"],
+    rubrics: [
+      { dimension: "fit", weight: 0.4, good: "能对齐目标", poor: "只谈自我" },
+      { dimension: "collaboration", weight: 0.3, good: "有协商", poor: "硬刚或躺平" },
+      { dimension: "motivation", weight: 0.3, good: "动机真实", poor: "套话" },
+    ],
+    referencePoints: ["场景", "协商", "结果"],
+  },
 ];

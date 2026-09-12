@@ -121,6 +121,8 @@ export type TurnSignals = {
   repeatRequest?: boolean;
   /** 口述与简历存在可挑战的冲突 */
   resumeConflict?: boolean;
+  /** 简历一致性分析：挑战 / 升级诚信结束 */
+  resumeConflictSeverity?: "challenge" | "integrity";
 };
 
 export type QuestionRuntime = {
@@ -147,12 +149,14 @@ export type QuestionRuntime = {
 
 export type SessionEvent = { t: string; type: string; payload: unknown };
 
+export type FeedbackBand = "强" | "中" | "弱" | "风险" | "严重";
+
 export type FeedbackDimensionScore = {
   dimension: string;
-  /** 1–5 */
+  /** 1–5；诚信严重项可为 1 */
   score: number;
-  /** 强 / 中 / 弱 / 风险 */
-  band: "强" | "中" | "弱" | "风险";
+  /** 强 / 中 / 弱 / 风险 / 严重（诚信红线专用） */
+  band: FeedbackBand;
   weight: number;
   evidence: string;
 };
@@ -180,6 +184,8 @@ export type FeedbackReport = {
   vagueInsufficientDetail?: boolean;
   /** 本场存在口述与简历冲突（真实性风险） */
   authenticityRisk?: boolean;
+  /** 诚信维度已单独标为严重/风险 */
+  integritySevere?: boolean;
 };
 
 export type InterviewSession = {
@@ -204,6 +210,8 @@ export type InterviewSession = {
   interviewerName?: string;
   /** 会话级能力标签（跨题汇总，如 vague_insufficient_detail） */
   sessionTags?: AbilityTag[];
+  /** 本场已对「口述 vs 简历」做过专业挑战的次数（≥1 后再冲突可升级诚信结束） */
+  authenticityChallengeCount?: number;
 };
 
 export type TurnDecision = {
@@ -218,4 +226,21 @@ export type TurnDecision = {
   done?: boolean;
   /** replyBank 命中：下游跳过润色，原样播报 */
   verbatim?: boolean;
+  /** 本题作答软时限（秒）；客户端应展示倒计时 / 软收束 */
+  answerSoftLimitSec?: number;
+  /** 本题作答硬时限（秒）；到时自动停麦并提交 */
+  answerHardLimitSec?: number;
+};
+
+/** 简历一致性 Agent 分析结果（LLM 优先，启发式兜底） */
+export type ResumeConsistencyAnalysis = {
+  conflict: boolean;
+  /** challenge=专业质疑；integrity=反复/明显造假 → 结束 */
+  severity: "none" | "challenge" | "integrity";
+  kind?: "stack" | "metric" | "ownership" | "project_claim" | "role" | "other";
+  resumeSide?: string;
+  answerSide?: string;
+  /** 推荐挑战话术（可再润色） */
+  utterance?: string;
+  source: "llm" | "heuristic";
 };

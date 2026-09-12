@@ -1,4 +1,11 @@
-import type { BehaviorConfig, RoleId, StyleId, TrackId } from "./types";
+import type {
+  BehaviorConfig,
+  InterviewAction,
+  Question,
+  RoleId,
+  StyleId,
+  TrackId,
+} from "./types";
 
 export const DEMO_ROLES: Array<{ id: RoleId; label: string; enabled: boolean }> = [
   { id: "rd_general", label: "研发岗", enabled: true },
@@ -34,33 +41,40 @@ export const DEMO_TRACKS: Array<{
   },
 ];
 
+/**
+ * 业务面：按 ~30–40 分钟语音面设计（约 8 主问题 + 有限追问）。
+ * 偏技术深挖，允许更多 FOLLOW_UP / 分级提示。
+ */
 export const PRESSURE_CONFIG: BehaviorConfig = {
   silenceThinkingMs: 2000,
   silenceNudgeMs: 5000,
   silenceStuckMs: 12000,
-  maxFollowUpsPerQuestion: 3,
+  maxFollowUpsPerQuestion: 2,
   maxPressurePerQuestion: 3,
   /** 业务面允许 L1–L3 分级提示 */
   maxHintsPerQuestion: 3,
   maxReframesPerQuestion: 1,
   minAnswerChars: 30,
-  questionsPerSession: 4,
+  questionsPerSession: 8,
   allowFirstHintOnRequest: true,
-  answerSoftLimitSec: 70,
-  answerHardLimitSec: 110,
+  answerSoftLimitSec: 90,
+  answerHardLimitSec: 140,
   styleChosen: "pressure",
   styleResolved: "pressure",
   tone: "steady_firm",
   maxVagueFollowUpsPerQuestion: 1,
 };
 
-/** HR终面：语气更软，少硬追问；技术向提示更少 */
+/** HR终面：更长会话但少硬追问；偏软性问题 */
 export const HR_FINAL_CONFIG: BehaviorConfig = {
   ...PRESSURE_CONFIG,
-  maxFollowUpsPerQuestion: 2,
+  maxFollowUpsPerQuestion: 1,
   maxPressurePerQuestion: 2,
   maxHintsPerQuestion: 1,
+  questionsPerSession: 7,
   allowFirstHintOnRequest: false,
+  answerSoftLimitSec: 80,
+  answerHardLimitSec: 120,
   tone: "steady_warm",
   maxVagueFollowUpsPerQuestion: 1,
 };
@@ -71,17 +85,51 @@ export function configForTrack(trackId: TrackId): BehaviorConfig {
 
 export const SKIP_SOFT_UTTERANCE = "好，这题我先记下了，我们换一个。";
 
-/** 空泛追问过一次后仍不够细 → 软换题 */
+/** 空泛追问过一次后仍不够细 → 软换题（不机械追加「细节可以补充」） */
 export const VAGUE_SOFT_SKIP_UTTERANCE =
-  "好，这题我先记下了——细节还可以再补。我们换一个。";
+  "好，这题我先记下了，我们换一个。";
 
-/** 空泛时的唯一一次短探 */
+/** 空泛时的唯一一次短探（仅当真薄时使用） */
 export const VAGUE_PROBE_UTTERANCE =
   "这块有点笼统，你具体负责哪一步？结果怎么验证的？";
 
 /** HR 轨道空泛短探（语气更软） */
 export const VAGUE_PROBE_UTTERANCE_HR =
   "能再具体一点吗？比如你当时怎么想、怎么做的？";
+
+/**
+ * 当面试官话术/题目暗示限时，或动作为 TIMEBOX 时，
+ * 把 config 的 soft/hard 时限交给客户端强制执行。
+ */
+export function answerLimitsForAction(input: {
+  action: InterviewAction;
+  question?: Question | null;
+  utterance?: string;
+  softSec: number;
+  hardSec: number;
+}): { answerSoftLimitSec?: number; answerHardLimitSec?: number } {
+  const blob = `${input.utterance || ""} ${input.question?.prompt || ""}`;
+  const twoMin = /两分钟|2\s*分钟|二分钟|120\s*秒/.test(blob);
+  const oneMin = /一分钟|1\s*分钟|六十秒|60\s*秒/.test(blob);
+  const timedPhrase =
+    /限时|时间内|时间到|请在.{0,6}内|TIMEBOX|软时限|硬时限/.test(blob) ||
+    twoMin ||
+    oneMin;
+  const timedAction = input.action === "TIMEBOX";
+
+  if (!timedAction && !timedPhrase) return {};
+
+  let soft = input.softSec;
+  let hard = input.hardSec;
+  if (twoMin) {
+    soft = 120;
+    hard = Math.max(140, Math.min(Math.max(input.hardSec, 150), 180));
+  } else if (oneMin) {
+    soft = 60;
+    hard = Math.max(75, Math.min(Math.max(input.hardSec, 90), 100));
+  }
+  return { answerSoftLimitSec: soft, answerHardLimitSec: hard };
+}
 
 /** 简历/经历明显不实或主动承认乱写时，直接结束 */
 export const INTEGRITY_END_UTTERANCE =

@@ -1,4 +1,8 @@
-import type { Question, ResumeProfile } from "./types";
+import type {
+  Question,
+  ResumeConsistencyAnalysis,
+  ResumeProfile,
+} from "./types";
 
 export type ResumeConflictHit = {
   kind: "stack" | "metric" | "ownership" | "project_claim" | "role";
@@ -259,12 +263,31 @@ export function craftResumeConflictUtterance(hit: ResumeConflictHit): string {
   const r = hit.resumeSide.slice(0, 40);
   const a = hit.answerSide.slice(0, 40);
   if (r && a) {
-    return `简历上写的是「${r}」，你刚才说的是「${a}」，哪边为准？`;
+    return `简历上写的是「${r}」，你刚才说的是「${a}」，哪边为准？你实际做了什么？`;
   }
-  return "这个点和简历写法有点不一致，你解释一下。";
+  return "这个点和简历写法有点不一致——你实际做了什么？";
 }
 
-/** 供润色用的简历摘要（短） */
+/** 启发式结果 → 统一分析结果（LLM 失败时的 fallback） */
+export function heuristicToAnalysis(
+  hit: ResumeConflictHit | null,
+  alreadyChallenged: boolean,
+): ResumeConsistencyAnalysis {
+  if (!hit) {
+    return { conflict: false, severity: "none", source: "heuristic" };
+  }
+  return {
+    conflict: true,
+    severity: alreadyChallenged ? "integrity" : "challenge",
+    kind: hit.kind,
+    resumeSide: hit.resumeSide,
+    answerSide: hit.answerSide,
+    utterance: craftResumeConflictUtterance(hit),
+    source: "heuristic",
+  };
+}
+
+/** 供润色 / LLM 用的简历摘要（短） */
 export function resumeContextForPolish(resume?: ResumeProfile): string {
   if (!resume) return "";
   const projects = (resume.projects || [])
@@ -277,4 +300,57 @@ export function resumeContextForPolish(resume?: ResumeProfile): string {
     .join(" | ");
   const skills = (resume.skills || []).slice(0, 8).join("、");
   return `技能:${skills || "—"}; 项目:${projects || "—"}`.slice(0, 500);
+}
+
+/** 供一致性 Agent 的结构化简历 JSON（截断） */
+export function resumeJsonForConsistency(resume?: ResumeProfile): Record<string, unknown> | null {
+  if (!resume) return null;
+  return {
+    name: resume.name,
+    summary: (resume.summary || "").slice(0, 400),
+    skills: (resume.skills || []).slice(0, 16),
+    experiences: (resume.experiences || []).slice(0, 4).map((e) => ({
+      org: e.org,
+      title: e.title,
+      period: e.period,
+      highlights: (e.highlights || []).slice(0, 4),
+    })),
+    projects: (resume.projects || []).slice(0, 4).map((p) => ({
+      name: p.name,
+      role: p.role,
+      stack: (p.stack || []).slice(0, 8),
+      highlights: (p.highlights || []).slice(0, 5),
+    })),
+  };
+}
+
+/** 是否值得跑简历一致性分析（经历/项目相关回答） */
+export function shouldAnalyzeResumeConsistency(
+  answer: string,
+  question?: Question,
+): boolean {
+  const text = answer.trim();
+  if (text.length < 12) return false;
+  if (
+    /乱写|瞎写|编的|编造|杜撰|假的|造假|注水|假经历|挂名|其实不是我做的/.test(
+      text,
+    )
+  ) {
+    // 明确承认造假 → 走诚信路径，不必再分析冲突
+    return false;
+  }
+  if (question?.fromResume) return true;
+  if (
+    /项目|简历|负责|经历|实习|公司|模块|接口|优化|指标|技术栈|我做了|主导|参与/.test(
+      text,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /项目|简历|经历|负责|技术|协作|动机/.test(question?.prompt || "")
+  ) {
+    return true;
+  }
+  return false;
 }

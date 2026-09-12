@@ -6,8 +6,6 @@ import {
   POLICY_THINKING_WAIT,
   PRESSURE_CONFIG,
   SKIP_SOFT_UTTERANCE,
-  VAGUE_PROBE_UTTERANCE,
-  VAGUE_PROBE_UTTERANCE_HR,
   VAGUE_SOFT_SKIP_UTTERANCE,
   configForTrack,
 } from "./config";
@@ -24,6 +22,12 @@ import {
   craftResumeConflictUtterance,
   detectResumeConflict,
 } from "./resumeConflict";
+import {
+  pickAdvancePrefix,
+  pickFollowUpTemplate,
+  pickSkipSoftPrefix,
+  pickVagueProbe,
+} from "./utterancePool";
 import { HR_QUESTIONS } from "./questions/hr";
 import { RD_QUESTIONS } from "./questions/rd";
 import type {
@@ -33,6 +37,7 @@ import type {
   InterviewSession,
   Question,
   QuestionRuntime,
+  ResumeConsistencyAnalysis,
   ResumeProfile,
   RoleId,
   StyleId,
@@ -96,10 +101,24 @@ export function buildQuestionQueue(
       referencePoints: [],
       fromResume: true,
     }));
-    return [...fromResume, ...HR_QUESTIONS].slice(0, cfg.questionsPerSession);
+    const fromExp: Question[] = (resume?.experiences || []).slice(0, 1).map((e, idx) => ({
+      id: `hr_resume_exp_${idx + 1}`,
+      roleId: "rd_general" as const,
+      trackId: "hr_final" as const,
+      prompt: `你在${e.org || "上一段经历"}时，印象最深的一次协作或冲突是什么？你怎么处理的？`,
+      intent: "hr_resume_conflict",
+      followUpHints: ["沟通", ...(e.highlights || [])],
+      rubrics: [
+        { dimension: "collaboration", weight: 0.5, good: "有动作与结果", poor: "空话" },
+        { dimension: "communication", weight: 0.5, good: "对齐预期", poor: "回避" },
+      ],
+      referencePoints: [],
+      fromResume: true,
+    }));
+    return [...fromResume, ...fromExp, ...HR_QUESTIONS].slice(0, cfg.questionsPerSession);
   }
 
-  const fromProjects: Question[] = (resume?.projects || []).slice(0, 2).map((p, idx) => ({
+  const fromProjects: Question[] = (resume?.projects || []).slice(0, 3).map((p, idx) => ({
     id: `resume_proj_${idx + 1}`,
     roleId: "rd_general" as const,
     trackId: "biz" as const,
@@ -154,7 +173,7 @@ function pressureOf(rt: QuestionRuntime) {
 /**
  * 根据候选人最新一句里的具体名词/职责转移，生成下一刀追问。
  * 例：先说「负责设计」→ 问设计细节；改口「写代码」→ 追问代码内容/怎么写。
- * 避免反复同一句「太笼统/再具体一点」。
+ * 避免反复同一句「太笼统/再具体一点/可以再详细」。
  */
 export function craftGroundedFollowUp(
   answer: string,
@@ -162,6 +181,7 @@ export function craftGroundedFollowUp(
   trackId: TrackId = "biz",
 ): string {
   const text = answer.trim();
+  const seed = text.length + action.length;
 
   if (trackId === "hr_final") {
     if (/团队|协作|同学|同事|沟通/.test(text)) {
@@ -180,7 +200,7 @@ export function craftGroundedFollowUp(
       const clip = text.replace(/\s+/g, "").slice(0, 24);
       return `你说「${clip}」——能举一个具体场景吗？你当时怎么想、怎么做的？`;
     }
-    return "能再落到一件具体事上吗？你个人做了什么？";
+    return pickFollowUpTemplate(action, trackId, seed);
   }
 
   // 后说的职责优先（话题转移）：代码/编写压过纯「设计」
@@ -214,20 +234,20 @@ export function craftGroundedFollowUp(
   }
 
   if (action === "FOLLOW_UP_BOUNDARY") {
-    return "这个方案在什么场景下会失效？你怎么兜底？";
+    return pickFollowUpTemplate("FOLLOW_UP_BOUNDARY", trackId, seed);
   }
   if (action === "FOLLOW_UP_PITFALL") {
-    return "落地时踩过什么坑？你怎么处理的？";
+    return pickFollowUpTemplate("FOLLOW_UP_PITFALL", trackId, seed);
   }
   if (action === "FOLLOW_UP_TRADEOFF") {
-    return "如果只能保留一个关键取舍，你会留哪个？为什么？";
+    return pickFollowUpTemplate("FOLLOW_UP_TRADEOFF", trackId, seed);
   }
   // ownership / default：仍要落到上一句，而不是空洞的「再具体一点」
   if (text.length > 0 && text.length < 80) {
     const clip = text.replace(/\s+/g, "").slice(0, 24);
     return `你说「${clip}」——其中你亲自做的动作是哪一步？结果怎么验证？`;
   }
-  return "其中哪一部分是你独立完成的？怎么证明？";
+  return pickFollowUpTemplate(action, trackId, seed);
 }
 
 /** 候选人要求复述当前问题/上一句面试官话术（原样重播，禁止改写） */
@@ -379,6 +399,7 @@ function advance(
   const current = session.runtimes[session.currentIndex]!;
   if (pendingTags.length) current.tags = Array.from(new Set([...current.tags, ...pendingTags]));
   const nextIndex = session.currentIndex + 1;
+  const seed = session.currentIndex + (session.authenticityChallengeCount || 0);
   if (nextIndex >= session.queue.length) {
     return {
       action: "FINISH",
@@ -397,7 +418,10 @@ function advance(
   }
   session.currentIndex = nextIndex;
   const next = session.runtimes[nextIndex]!;
-  const prefix = via === "SKIP_SOFT" ? skipText : "下一个问题。";
+  const prefix =
+    via === "SKIP_SOFT"
+      ? skipText || pickSkipSoftPrefix(seed)
+      : pickAdvancePrefix(seed);
   return {
     action: via === "SKIP_SOFT" ? "SKIP_SOFT" : "ASK",
     utterance: `${prefix}${next.question.prompt}`,
@@ -434,8 +458,7 @@ function handleVagueCap(
   pendingTags.push("vague_insufficient_detail");
   addSessionTag(session, "vague_insufficient_detail");
   const probe =
-    preferredUtterance ||
-    (trackId === "hr_final" ? VAGUE_PROBE_UTTERANCE_HR : VAGUE_PROBE_UTTERANCE);
+    preferredUtterance || pickVagueProbe(trackId, rt.followUpCount + rt.vagueFollowUpCount);
   return {
     action: "FOLLOW_UP_OWNERSHIP",
     utterance: probe,
@@ -452,6 +475,8 @@ export function decideTurn(input: {
   session: InterviewSession;
   answer: string;
   silenceStuck?: boolean;
+  /** 简历一致性 Agent（LLM 优先）；缺省时引擎内回落启发式 */
+  resumeAnalysis?: ResumeConsistencyAnalysis;
 }): TurnDecision {
   const { session } = input;
   const cfg = session.config;
@@ -729,34 +754,75 @@ export function decideTurn(input: {
     };
   }
 
-  // 口述 vs 简历冲突：专业挑战一次并打 authenticity_risk；明确造假仍走诚信结束
-  if (
-    rt.resumeConflictProbeCount < 1 &&
-    pressureOf(rt) < cfg.maxPressurePerQuestion
-  ) {
-    const conflict = detectResumeConflict(
-      input.answer,
-      session.resume,
-      rt.question,
-    );
-    if (conflict) {
+  // 口述 vs 简历冲突：首次专业挑战并打 authenticity_risk；反复/明显造假 → 诚信结束
+  {
+    const alreadyChallenged =
+      (session.authenticityChallengeCount || 0) > 0 || rt.resumeConflictProbeCount > 0;
+    let analysis = input.resumeAnalysis;
+    if (!analysis) {
+      const hit = detectResumeConflict(input.answer, session.resume, rt.question);
+      if (hit) {
+        analysis = {
+          conflict: true,
+          severity: alreadyChallenged ? "integrity" : "challenge",
+          kind: hit.kind,
+          resumeSide: hit.resumeSide,
+          answerSide: hit.answerSide,
+          utterance: craftResumeConflictUtterance(hit),
+          source: "heuristic",
+        };
+      }
+    }
+    if (analysis?.conflict && analysis.severity !== "none") {
       signals.resumeConflict = true;
-      rt.resumeConflictProbeCount += 1;
-      rt.followUpCount += 1;
       pendingTags.push("authenticity_risk");
       addSessionTag(session, "authenticity_risk");
+
+      const escalate =
+        analysis.severity === "integrity" ||
+        alreadyChallenged ||
+        rt.resumeConflictProbeCount >= 1;
+
+      if (escalate) {
+        signals.resumeConflictSeverity = "integrity";
+        signals.integrityBreach = true;
+        pendingTags.push("role_mismatch_suspected");
+        if (pendingTags.length) rt.tags = Array.from(new Set([...rt.tags, ...pendingTags]));
+        return {
+          action: "FINISH",
+          utterance: INTEGRITY_END_UTTERANCE,
+          questionId: rt.question.id,
+          followUpCount: rt.followUpCount,
+          hintCount: rt.hintCount,
+          reframeCount: rt.reframeCount,
+          signals,
+          pendingTags,
+          done: true,
+          verbatim: true,
+        };
+      }
+
+      signals.resumeConflictSeverity = "challenge";
+      rt.resumeConflictProbeCount += 1;
+      rt.followUpCount += 1;
+      session.authenticityChallengeCount = (session.authenticityChallengeCount || 0) + 1;
       return {
         action: "FOLLOW_UP_OWNERSHIP",
         utterance:
-          craftResumeConflictUtterance(conflict) ||
-          RESUME_CONFLICT_GENERIC_UTTERANCE,
+          analysis.utterance ||
+          (analysis.resumeSide && analysis.answerSide
+            ? craftResumeConflictUtterance({
+                kind: (analysis.kind as "ownership") || "ownership",
+                resumeSide: analysis.resumeSide,
+                answerSide: analysis.answerSide,
+              })
+            : RESUME_CONFLICT_GENERIC_UTTERANCE),
         questionId: rt.question.id,
         followUpCount: rt.followUpCount,
         hintCount: rt.hintCount,
         reframeCount: rt.reframeCount,
         signals,
         pendingTags,
-        // 允许带简历上下文的轻润色；事实两侧已写进 draft
         verbatim: false,
       };
     }
@@ -860,7 +926,7 @@ export function decideTurn(input: {
     rt.answerIndependence = "independent";
   }
 
-  // 6) 空泛/笼统：至多 1 次短探，再软跳过（不无限 FOLLOW_UP）
+  // 6) 空泛/笼统：至多 1 次短探，再软跳过（不无限 FOLLOW_UP；非空泛不套「再详细」）
   {
     const capped = handleVagueCap(session, rt, signals, pendingTags);
     if (capped) return capped;
@@ -894,12 +960,21 @@ export function decideTurn(input: {
     };
   }
 
-  const enough =
-    input.answer.trim().length >= cfg.minAnswerChars &&
-    (rt.followUpCount >= 1 || input.answer.trim().length >= 80);
+  const textLen = input.answer.trim().length;
+  const hasConcrete =
+    /\d+%|\d+\s*ms|\d+\s*秒|P95|QPS|接口|SQL|索引|缓存|回滚|根因|我独立|我负责|具体(做了|改了|查了)|第一步|验证/.test(
+      input.answer,
+    );
+  // 充实回答可直接推进，不强制每题都追问「再详细」
+  const solidEnough =
+    !signals.vague &&
+    !signals.tooShort &&
+    ((textLen >= 120 && hasConcrete) ||
+      (textLen >= cfg.minAnswerChars && rt.followUpCount >= 1) ||
+      (trackId === "hr_final" && textLen >= 90 && rt.followUpCount >= 1));
 
   if (
-    !enough &&
+    !solidEnough &&
     rt.followUpCount < cfg.maxFollowUpsPerQuestion &&
     pressureOf(rt) < cfg.maxPressurePerQuestion
   ) {
@@ -910,7 +985,7 @@ export function decideTurn(input: {
       "FOLLOW_UP_OWNERSHIP",
       "FOLLOW_UP_TRADEOFF",
     ];
-    // HR终面少做架构/边界硬刨，偏 ownership
+    // HR终面少做架构/边界硬刨，偏 ownership；业务面更多技术深挖
     const action =
       trackId === "hr_final"
         ? "FOLLOW_UP_OWNERSHIP"

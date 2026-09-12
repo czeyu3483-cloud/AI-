@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { answerLimitsForAction } from "@/lib/config";
 import { getSession } from "@/lib/store";
 
 export async function GET(req: Request) {
@@ -12,6 +13,13 @@ export async function GET(req: Request) {
   }
 
   const question = session.queue[session.currentIndex] ?? null;
+  const limits = answerLimitsForAction({
+    action: session.lastAction,
+    question,
+    utterance: session.lastUtterance,
+    softSec: session.config.answerSoftLimitSec,
+    hardSec: session.config.answerHardLimitSec,
+  });
   return NextResponse.json({
     sessionId: session.id,
     utterance: session.lastUtterance,
@@ -25,5 +33,7 @@ export async function GET(req: Request) {
     lastAction: session.lastAction,
     interviewerName: session.interviewerName || "王老师",
     candidateName: session.resume?.name || null,
+    answerSoftLimitSec: limits.answerSoftLimitSec,
+    answerHardLimitSec: limits.answerHardLimitSec,
   });
 }

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { generateFeedback, polishUtterance } from "@/lib/deepseek";
+import { answerLimitsForAction } from "@/lib/config";
+import { analyzeResumeConsistency, generateFeedback, polishUtterance } from "@/lib/deepseek";
 import { decideTurn } from "@/lib/engine";
 import { resumeContextForPolish } from "@/lib/resumeConflict";
 import { getSession, pushEvent, saveSession } from "@/lib/store";
@@ -31,10 +32,23 @@ export async function POST(req: Request) {
       silenceStuck: Boolean(body.silenceStuck),
     });
 
+    const currentRt = session.runtimes[session.currentIndex];
+    const alreadyChallenged =
+      (session.authenticityChallengeCount || 0) > 0 ||
+      Boolean(currentRt && currentRt.resumeConflictProbeCount > 0);
+
+    const resumeAnalysis = await analyzeResumeConsistency({
+      answer: body.answer || "",
+      resume: session.resume,
+      question: currentRt?.question,
+      alreadyChallenged,
+    });
+
     const decision = decideTurn({
       session,
       answer: body.answer || "",
       silenceStuck: Boolean(body.silenceStuck),
+      resumeAnalysis,
     });
 
     // FINISH / bank endInterview / integrity 一律视为本场结束
@@ -90,6 +104,16 @@ export async function POST(req: Request) {
         (session.lastUtterance && session.lastUtterance.trim()) || decision.utterance;
       decision.verbatim = true;
     }
+
+    const limits = answerLimitsForAction({
+      action: decision.action,
+      question: session.queue[session.currentIndex] ?? q,
+      utterance: decision.utterance,
+      softSec: session.config.answerSoftLimitSec,
+      hardSec: session.config.answerHardLimitSec,
+    });
+    decision.answerSoftLimitSec = limits.answerSoftLimitSec;
+    decision.answerHardLimitSec = limits.answerHardLimitSec;
 
     session.lastAction = decision.action;
     session.lastUtterance = decision.utterance;

@@ -42,6 +42,15 @@ export async function GET(
   }
   write("Overall:");
   write(session.feedback.overallSummary);
+  if (session.feedback.integrityBreach) {
+    write("Integrity: SEVERE — resume authenticity red line.");
+  }
+  if (session.feedback.dimensions?.length) {
+    write("Dimensions:");
+    for (const d of session.feedback.dimensions) {
+      write(`- ${d.dimension}: ${d.score}/5 (${d.band}) ${d.evidence || ""}`);
+    }
+  }
   for (const q of session.feedback.perQuestion) {
     write(`Q: ${q.prompt}`);
     write(`A: ${q.userAnswer}`);
