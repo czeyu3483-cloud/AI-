@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+:root {
+  --bg0: #0b1220;
+  --bg1: #121a2b;
+  --card: #172033;
+  --line: #2a3650;
+  --text: #e8eefc;
+  --muted: #9aa8c7;
+  --accent: #3db8a8;
+  --accent-2: #f0b429;
+  --danger: #e25b5b;
+}
+
+@theme inline {
+  --color-background: var(--bg0);
+  --color-foreground: var(--text);
+  --font-sans: var(--font-display);
+  --font-mono: var(--font-mono);
+}
+
+body {
+  min-height: 100vh;
+  color: var(--text);
+  background:
+    radial-gradient(1200px 600px at 10% -10%, #1a2a44 0%, transparent 55%),
+    radial-gradient(900px 500px at 100% 0%, #16352f 0%, transparent 50%),
+    linear-gradient(160deg, var(--bg0), var(--bg1));
+  font-family: var(--font-display), "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
