@@ -17,7 +17,7 @@ export default function HomePage() {
     () =>
       roleId === "rd_general" &&
       styleId === "pressure" &&
-      (trackId === "biz" || trackId === "hr_final") &&
+      trackId === "biz" &&
       Boolean(resumeText.trim()),
     [roleId, styleId, trackId, resumeText],
   );

@@ -30,8 +30,12 @@ export async function POST(req: Request) {
     };
     const roleId = body.roleId ?? "rd_general";
     const styleId = body.styleId ?? "pressure";
-    const trackId: TrackId = body.trackId === "hr_final" ? "hr_final" : "biz";
-    assertDemoSelection(roleId, styleId, trackId);
+    // Demo：仅业务面可选。若客户端仍传 hr_final，assert 直接 400；其余一律按 biz 开场。
+    // HR 题库 / decideTurn / 复盘权重等代码路径仍保留，便于后续解锁。
+    const requestedTrack: TrackId =
+      body.trackId === "hr_final" ? "hr_final" : "biz";
+    assertDemoSelection(roleId, styleId, requestedTrack);
+    const trackId: TrackId = "biz";
 
     const resume = body.resume
       ? {
@@ -97,7 +101,7 @@ export async function POST(req: Request) {
       interviewerName,
       sessionTags: [],
       authenticityChallengeCount: 0,
-      currentPhase: queue[0]?.phase || (trackId === "hr_final" ? "hr_fit" : "resume_research"),
+      currentPhase: queue[0]?.phase || "resume_research",
       resumeConflicts: [],
       codingResults: [],
       pendingConflictChallenge: null,

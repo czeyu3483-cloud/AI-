@@ -55,8 +55,9 @@ import type {
 export function assertDemoSelection(roleId: RoleId, styleId: StyleId, trackId?: TrackId) {
   if (roleId !== "rd_general") throw new Error("当前 Demo 仅开放研发岗（其他岗位暂不可选）");
   if (styleId !== "pressure") throw new Error("当前 Demo 仅开放压力面（其他风格暂不可选）");
-  if (trackId && trackId !== "biz" && trackId !== "hr_final") {
-    throw new Error("当前 Demo 仅开放业务面或 HR终面");
+  // Demo：UI 仅业务面可选；HR 题库与路径仍保留，供后续解锁
+  if (trackId && trackId !== "biz") {
+    throw new Error("当前 Demo 仅开放业务面（HR终面暂不可选）");
   }
 }
 
