@@ -89,7 +89,11 @@ export default function InterviewPage() {
     async () => undefined,
   );
 
-  const progress = useMemo(() => `${Math.min(index + 1, total)} / ${total}`, [index, total]);
+  const progress = useMemo(() => {
+    // 面试开始后不展示题量（禁止 N/total）
+    if (phase) return phaseLabel(phase);
+    return `第 ${Math.max(1, index + 1)} 题`;
+  }, [index, phase]);
   const inCoding = Boolean(codingProblem || currentQuestion?.isCoding || phase === "coding");
 
   function syncCodingFromQuestion(q: Question | null | undefined, explicit?: CodingProblem | null) {
