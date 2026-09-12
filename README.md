@@ -5,8 +5,9 @@
 ## 功能
 
 - 首页：岗位/风格选择（仅研发岗+压力面可选，其余展示为「暂不可选」）
-- 简历：粘贴文本 / 上传 txt、docx、pdf → **AI 总结**姓名、概述、技能、经历与项目（不依赖固定关键词）
-- 面试：**无字幕纯语音** + 简单数字人（倾听/说话态）；麦克风作答，说完自动提交
+- 简历：粘贴/上传后点「开始面试」会**自动 AI 分析**（不必先点总结）
+- 面试：**无字幕纯语音** + 简单数字人；进页后先点「开启语音面试」授权声音与麦克风
+- 播报：服务端 Edge TTS（听不清时可点「重播上一题」）；识别失败可用「文字作答（备用）」
 - 控场：状态机（追问/换角度/卡壳软跳题）+ DeepSeek 润色
 - 复盘：结构化反馈 + PDF 下载
 
@@ -22,7 +23,7 @@ npm run dev -- --port 3456 --hostname 127.0.0.1
 
 打开 [http://127.0.0.1:3456](http://127.0.0.1:3456)
 
-建议使用 Chrome，并允许麦克风与语音播报权限。
+请用 **本机 Chrome** 打开，并允许麦克风。云端远程桌面里常听不到系统声、也收不到麦克风，这是环境限制，不是功能缺失。
 
 ## 环境变量
 
@@ -37,7 +38,7 @@ npm run dev -- --port 3456 --hostname 127.0.0.1
 
 ## 技术栈
 
-Next.js 15 · TypeScript · Tailwind · DeepSeek（OpenAI 兼容 SDK）· mammoth / pdf-parse · jsPDF · 浏览器 ASR/TTS
+Next.js 15 · TypeScript · Tailwind · DeepSeek · Edge TTS · 浏览器 SpeechRecognition · mammoth / pdf-parse · jsPDF
 
 ## 文档与 Skills
 
