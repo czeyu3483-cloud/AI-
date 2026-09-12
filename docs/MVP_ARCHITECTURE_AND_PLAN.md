@@ -21,6 +21,7 @@
 - 题库 + 评分标准来自可校验知识底座，不全靠自由 Prompt
 - 面试官行为是**参数化状态机**，不是模型自由发挥
 - 有停顿阈值、追问深度上限、终止条件
+- **控场规则产品化**（一次一问、追问取舍/边界、中立白板、翻身机会、反应场景话术、不当场宣判）——详见 [`INTERVIEWER_CONDUCT_RULES.md`](./INTERVIEWER_CONDUCT_RULES.md)
 
 ---
 
@@ -122,6 +123,16 @@ type InterviewBehaviorConfig = {
   minAnswerChars: number;      // 例如 20：过短回答可触发追问/提示
   questionsPerSession: number; // 例如 3–5
   nudgeBeforeSkip: boolean;    // 卡壳时先提示一次再跳题
+  // 控场增量（详见 INTERVIEWER_CONDUCT_RULES.md）
+  maxPressurePerQuestion: number;   // 追问+提示+翻身总上限，建议 3
+  maxHintsPerQuestion: number;      // 建议 1
+  maxReframesPerQuestion: number;   // 建议 1
+  answerSoftLimitSec: number;       // 建议 90
+  answerHardLimitSec: number;       // 建议 150
+  allowFirstHintOnRequest: boolean;
+  shortenProbeIfMismatch: boolean;
+  singleQuestionOnly: true;
+  followUpStyles: Array<"tradeoff" | "boundary" | "pitfall" | "ownership">;
 };
 ```
 
@@ -133,24 +144,33 @@ type InterviewBehaviorConfig = {
 LISTENING:
   - 检测到语音开始 → USER_SPEAKING
   - 沉默 < silenceStuckMs → 继续 LISTENING（允许自然留白）
-  - 沉默 ≥ silenceStuckMs 且本题未 nudge → STUCK → NUDGE
-  - 沉默 ≥ silenceStuckMs 且已 nudge → NEXT_QUESTION
+  - 沉默 ≥ silenceStuckMs 且本题未 hint → STUCK → HINT_DIRECTION
+  - 沉默 ≥ silenceStuckMs 且已 hint → SKIP_SOFT → NEXT_QUESTION
 
 USER_SPEAKING:
+  - 仍在提供匹配信息 → CONTINUE_LISTEN（不打断）
+  - 超时注水 → TIMEBOX；跑题 → REDIRECT（禁说「你停一下」）
   - 语音结束 → 提交 ASR 文本 → 服务端 turn 决策
 
 turn 决策（服务端 Rule Engine，LLM 只辅助分类/生成）:
-  - 回答过短/明显跑题 且 followUpCount < max → FOLLOW_UP
-  - 回答充分 或 followUpCount 已达上限 → NEXT_QUESTION（或最后一题 → WRAP_UP）
-  - 明确表示不会 / 放弃 → NUDGE 一次，再放弃则 NEXT_QUESTION
+  - 强制：输出有且仅有 1 个问题（singleQuestionOnly）
+  - 追问只允许 tradeoff / boundary / pitfall / ownership
+  - 答砸且未翻身 → 可 REFRAME 一次
+  - 压力次数达 maxPressurePerQuestion → SKIP_SOFT，不连续死磕
+  - 疑似背题 → 优先 PITFALL / OWNERSHIP 细节追问
+  - 要答案：第1次可 HINT_DIRECTION，之后 FORMULA_DEFLECT
+  - 反问控场 / 薪资加班 → FORMULA_DEFLECT，拿回控场
+  - 过度自信 → BOUNDARY，不正面否定
+  - 明显不匹配 → SHORTEN_PROBE，仍走完流程
+  - 全程禁止当场宣判通过/不通过
 
 THINKING_WAIT:
   - 用于「答了一半停顿」：silenceThinkingMs 内再开口 → 回到 USER_SPEAKING
   - 超过 silenceStuckMs → 按 STUCK 流程
 
 禁止：
-  - 无限追问
-  - TTS 播报中抢麦打断用户（ASKING 期间不进入有效听写提交）
+  - 一口气多问；无限追问；同题死磕超过压力上限
+  - TTS 播报中抢麦；用鼓励/否定话术泄漏标准答案信号
   - 仅靠 Prompt「你自己决定要不要追问」而无状态计数
 ```
 
@@ -159,10 +179,10 @@ THINKING_WAIT:
 | 决策 | 谁说了算 |
 | --- | --- |
 | 下一题从哪来 | 题库顺序/抽题策略（规则） |
-| 是否追问、是否跳题 | Rule Engine + 计数器 |
-| 追问问什么 | LLM **在「本题考察点 + 用户回答 + 追问方向模板」约束下**生成，并经 schema 校验 |
+| 是否追问、是否跳题、用哪类控场动作 | Rule Engine + 计数器 + 场景信号 |
+| 追问问什么 | LLM 在 **指定 action + 考察点 + 追问风格** 下生成单句，schema 校验 |
 | 是否卡壳 | **仅计时器 + 语音活动检测**，不用模型猜情绪 |
-| 最终评分 | 按题库评分维度打分；LLM 填「证据摘录 + 改进建议」，分数可先规则/半规则 |
+| 最终评分 | 按题库评分维度；强制区分可培养/没学过/紧张等标签；LLM 填证据与改进建议 |
 
 ---
 
@@ -212,15 +232,28 @@ type SessionLog = {
 ### 5.3 复盘反馈结构
 
 ```ts
+type AbilityTag =
+  | "can_reason_trainable"
+  | "knowledge_gap_not_learned"
+  | "nervous_but_capable"
+  | "cannot_solve_after_hint"
+  | "surface_knowledge_no_practice"
+  | "confident_and_solid"
+  | "self_awareness_gap"
+  | "weak_independent_problem_solving"
+  | "role_mismatch_suspected";
+
 type FeedbackReport = {
   overallSummary: string;
   perQuestion: Array<{
     questionId: string;
     userAnswer: string;
     scores: Array<{ dimension: string; score: number; evidence: string }>;
+    tags: AbilityTag[]; // 必须区分：不会/没学过、紧张/不会等
     improvements: string[]; // 可执行，最多 3 条/题
   }>;
   topActions: string[]; // 全局 3 条下一步练习建议
+  // 不当场宣判：此处也不输出通过/不通过结论，只给能力画像与改进
 };
 ```
 
@@ -265,10 +298,12 @@ ASR：MVP 默认浏览器端完成，文本经 `turn` 上传；若切云 ASR，�
 
 1. Next.js 脚手架、基础布局、环境变量模板
 2. 写入 2 岗位题库 JSON + 评分维度（人工校验）
-3. 实现 Rule Engine 纯函数 + 单元测试（状态迁移、追问计数、停顿阈值）
-4. `start / turn / silence / finish` API 打通（TTS/数字人先返回纯文本）
+3. 实现 Rule Engine 纯函数 + 单元测试（状态迁移、追问计数、停顿阈值、**控场动作与红线词**）
+4. 固化话术模板库：`TIMEBOX` / `REDIRECT` / `SKIP_SOFT` / `FORMULA_DEFLECT` 等
+5. `start / turn / silence / finish` API 打通（TTS/数字人先返回纯文本）
+6. 反馈强制输出 AbilityTag（可培养 / 没学过 / 紧张 等）
 
-**阶段出口**：纯文字模式下完整跑通「选岗 → 多题 → 有限追问 → 卡壳跳题 → 反馈 + 日志」
+**阶段出口**：纯文字模式下完整跑通「选岗 → 一次一问 → 取舍/边界追问 → 卡壳提示后换题 → 长答收束/跑题拉回 → 结构化标签反馈 + 日志」
 
 ### Phase B · 语音双向
 
@@ -352,6 +387,11 @@ ASR：MVP 默认浏览器端完成，文本经 `turn` 上传；若切云 ASR，�
 - [ ] 麦克风作答进入流程
 - [ ] 沉默未超阈值不被打断；超阈值触发提示或下一题
 - [ ] 追问次数有上限，达上限进下一题
+- [ ] **一次只问一个问题**；追问聚焦取舍/边界/坑/ownership
+- [ ] 长答可收束、跑题可拉回；无「你停一下」
+- [ ] 卡壳有翻身/方向提示，不连续死磕；要答案有次数限制
+- [ ] 反问控场/薪资等公式化挡回；全程不当场宣判
+- [ ] 复盘区分可培养 / 没学过 / 紧张等标签
 - [ ] 结束有结构化复盘
 - [ ] 本场日志可查（题目/回答/状态决策）
 - [ ] 停顿阈值、追问深度可配置
