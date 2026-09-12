@@ -33,6 +33,7 @@ import {
   detectResumeConflict,
   utteranceForExplainOutcome,
 } from "./resumeConflict";
+import { appendInconsistencies, runConsistencyCheck } from "./consistencyCheck";
 import { pickSubjectQuestion } from "./subjectQuestions";
 import {
   pickAdvancePrefix,
@@ -139,7 +140,7 @@ export function buildQuestionQueue(
   }
 
   // —— 业务面：自我介绍 + 约 4 主问题 ——
-  // 0 自我介绍；1–2 简历深挖（结合简历自然点名）；3 学科专业题库；4 编程（本次可不练）
+  // 0 自我介绍；1–2 简历深挖（短前置 + 简历锚定）；3 学科专业题库；4 编程
   const introQ: Question = {
     id: "biz_self_intro",
     roleId: "rd_general",
@@ -179,8 +180,8 @@ export function buildQuestionQueue(
       trackId: "biz",
       phase: "resume_deep_dive",
       prompt: stackKnown
-        ? `你简历里写了做过「${digTarget}」项目，我注意到上面写到${stackHint.slice(0, 2).join("、")}——为什么选它，而不是${altStack}？数据量大概多大，列表/状态这类难点你怎么处理的？`
-        : `你简历里写了做过「${digTarget}」项目，能具体说说你在里面负责什么吗？最关键的一次技术取舍是什么，规模与约束大概怎样？`,
+        ? `我看你的简历，我想问：做「${digTarget}」时为什么选${stackHint.slice(0, 2).join("、")}，而不是${altStack}？数据量大概多大，列表/状态难点你怎么处理的？`
+        : `我看你的简历，我想问：在「${digTarget}」里你具体负责什么？最关键的一次技术取舍和规模约束是什么？`,
       intent: "resume_dig_why_scale",
       followUpHints: ["取舍理由", "规模", "虚拟列表/状态", ...(primary.highlights || [])],
       rubrics: [
@@ -195,7 +196,7 @@ export function buildQuestionQueue(
       roleId: "rd_general",
       trackId: "biz",
       phase: "resume_deep_dive",
-      prompt: `再围绕简历上的「${digTarget}」往下挖：哪个模块是你个人真正负责的？出过错或失败方案吗，你怎么收的？`,
+      prompt: `我看你的简历，我想问：围绕「${digTarget}」，哪个模块是你个人真正负责的？出过错吗，你怎么收的？`,
       intent: "resume_dig_ownership",
       followUpHints: ["模块边界", "失败", "协作", ...(primary.highlights || [])],
       rubrics: [
@@ -211,7 +212,7 @@ export function buildQuestionQueue(
       roleId: "rd_general",
       trackId: "biz",
       phase: "resume_deep_dive",
-      prompt: `我看你简历里提到「${secondary.name}」，能具体说说你在里面负责什么吗？最难的一次取舍是什么，规模大概怎样？`,
+      prompt: `我看你的简历，我想问：「${secondary.name}」里你负责什么？最难的一次取舍和规模大概怎样？`,
       intent: "resume_dig_why_scale",
       followUpHints: ["取舍", "规模", ...(secondary.highlights || [])],
       rubrics: [
@@ -226,7 +227,7 @@ export function buildQuestionQueue(
       roleId: "rd_general",
       trackId: "biz",
       phase: "resume_deep_dive",
-      prompt: `还是「${secondary.name}」：你个人真正负责哪一块？有没有失败方案，你怎么收的？`,
+      prompt: `我看你的简历，我想问：「${secondary.name}」里你个人真正负责哪一块？有没有失败方案？`,
       intent: "resume_dig_ownership",
       followUpHints: ["职责", "失败", ...(secondary.highlights || [])],
       rubrics: [
@@ -242,7 +243,7 @@ export function buildQuestionQueue(
       roleId: "rd_general",
       trackId: "biz",
       phase: "resume_deep_dive",
-      prompt: `我看你的简历里有提到在${exp0.org || "相关单位"}${/实习/.test(`${exp0.title || ""}${exp0.period || ""}`) ? "实习" : "工作"}过，那我想问一下：担任${exp0.title || "相关角色"}时，最关键的一次技术或方案取舍是什么？为什么这么选？`,
+      prompt: `我看你的简历，我想问：在${exp0.org || "相关单位"}担任${exp0.title || "相关角色"}时，最关键的一次技术或方案取舍是什么？为什么这么选？`,
       intent: "resume_dig_why_scale",
       followUpHints: ["取舍理由", ...(exp0.highlights || [])],
       rubrics: [
@@ -258,8 +259,8 @@ export function buildQuestionQueue(
       trackId: "biz",
       phase: "resume_deep_dive",
       prompt: skill0
-        ? `我注意到你简历上写熟练掌握${skill0}，结合刚才那段经历：哪件事是你独立闭环的？出过错吗，你怎么定位和收尾的？`
-        : `同一段经历里，哪件事是你独立闭环的？出过错吗，你怎么定位和收尾的？`,
+        ? `我看你的简历，我想问：结合${skill0}相关经历，哪件事是你独立闭环的？出过错吗，你怎么收尾的？`
+        : `我看你的简历，我想问：哪件事是你独立闭环的？出过错吗，你怎么定位和收尾的？`,
       intent: "resume_dig_ownership",
       followUpHints: ["个人动作", "失败", ...(exp0.highlights || [])],
       rubrics: [
@@ -301,9 +302,7 @@ export function buildQuestionQueue(
     roleId: "rd_general",
     trackId: "biz",
     phase: "professional_knowledge",
-    prompt: skill0
-      ? `我注意到你简历上的专业背景，想问一道${subject.category}相关的问题：${subject.prompt}`
-      : `接下来一道${subject.category}的问题：${subject.prompt}`,
+    prompt: `我看你的简历，我想问一道${subject.category}相关的问题：${subject.prompt}`,
     intent: "subject_bank",
     followUpHints: [subject.category],
     rubrics: [
@@ -324,7 +323,7 @@ export function buildQuestionQueue(
     roleId: "rd_general",
     trackId: "biz",
     phase: "coding",
-    prompt: `编程环节：${codingProblem.title}。请在编辑器里手写实现并跑测；如果这次不想练这道题，也可以先不练、继续面试。${codingProblem.prompt}`,
+    prompt: `编程环节：${codingProblem.title}。请在编辑器里手写实现并提交。${codingProblem.prompt}`,
     intent: "coding_exercise",
     followUpHints: [codingProblem.complexityHint || "复杂度"],
     rubrics: [
@@ -362,7 +361,7 @@ export function mergeSelfIntroText(session: InterviewSession, chunk: string) {
   session.selfIntroText = `${prev} ${next}`.trim();
 }
 
-/** 自我介绍结束后，用介绍细节 enrichment 后续深挖题干 */
+/** 自我介绍结束后，用介绍细节 enrichment 后续深挖题干（保持短前置） */
 export function enrichDigsWithSelfIntro(session: InterviewSession) {
   const intro = (session.selfIntroText || "").trim();
   if (!intro) return;
@@ -388,8 +387,18 @@ export function enrichDigsWithSelfIntro(session: InterviewSession) {
   if (!hook || hook.length < 2) return;
   for (const rt of session.runtimes) {
     if (rt.question.phase !== "resume_deep_dive") continue;
-    if (/刚才自我介绍|你刚提到/.test(rt.question.prompt)) continue;
-    rt.question.prompt = `结合你刚才自我介绍里提到的「${hook}」，以及简历：${rt.question.prompt}`;
+    if (/我看你的简历，我想问/.test(rt.question.prompt) && rt.question.prompt.includes(hook)) {
+      continue;
+    }
+    // 短前置：不写长「结合自我介绍……」
+    if (/^我看你的简历，我想问/.test(rt.question.prompt)) {
+      rt.question.prompt = rt.question.prompt.replace(
+        /^我看你的简历，我想问[：:]?/,
+        `我看你的简历，我想问（你刚提到「${hook}」）：`,
+      );
+    } else if (!/你刚提到/.test(rt.question.prompt)) {
+      rt.question.prompt = `我看你的简历，我想问：结合「${hook}」，${rt.question.prompt}`;
+    }
     const qi = session.queue.findIndex((q) => q.id === rt.question.id);
     if (qi >= 0) session.queue[qi] = rt.question;
   }
@@ -778,6 +787,50 @@ function handleVagueCap(
   };
 }
 
+function collectPreviousAnswers(session: InterviewSession, excludeCurrent = true): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < session.runtimes.length; i++) {
+    const rt = session.runtimes[i]!;
+    if (excludeCurrent && i === session.currentIndex) {
+      // 本题此前追问仍计入「历史」以便跨轮对比，但最后一条刚 push 的当前答由调用方单独传
+      const answers = rt.userAnswers.slice(0, -1);
+      out.push(...answers);
+      continue;
+    }
+    out.push(...rt.userAnswers);
+  }
+  if (session.selfIntroText) {
+    // selfIntro 单独传；避免重复时可跳过 intro runtime 全文
+  }
+  return out.filter(Boolean);
+}
+
+function persistInconsistencies(
+  session: InterviewSession,
+  analysis?: ResumeConsistencyAnalysis,
+  answer?: string,
+  question?: Question,
+) {
+  let extras = analysis?.inconsistencies || [];
+  if (!extras.length && answer) {
+    const check = runConsistencyCheck({
+      answer,
+      resume: session.resume,
+      selfIntroText: session.selfIntroText,
+      previousAnswers: collectPreviousAnswers(session),
+      question,
+    });
+    extras = check.conflicts;
+    if ((!analysis || !analysis.conflict) && check.analysis.conflict) {
+      // 调用方可用返回的 analysis；此处只落盘
+    }
+  }
+  if (extras.length) {
+    session.inconsistencies = appendInconsistencies(session.inconsistencies, extras);
+  }
+  return extras;
+}
+
 export function decideTurn(input: {
   session: InterviewSession;
   answer: string;
@@ -826,6 +879,28 @@ export function decideTurn(input: {
 
   if (input.answer.trim()) rt.userAnswers.push(input.answer.trim());
 
+  // 每答落盘一致性结果（耐久列表）；推进前若有冲突则下方打断
+  persistInconsistencies(session, input.resumeAnalysis, input.answer, rt.question);
+
+  // 若路由未给出分析或分析漏检，引擎内再跑全场核查
+  let resumeAnalysis = input.resumeAnalysis;
+  if (!resumeAnalysis?.conflict) {
+    const local = runConsistencyCheck({
+      answer: input.answer,
+      resume: session.resume,
+      selfIntroText: session.selfIntroText,
+      previousAnswers: collectPreviousAnswers(session),
+      question: rt.question,
+    });
+    if (local.analysis.conflict) {
+      resumeAnalysis = { ...local.analysis, inconsistencies: local.conflicts };
+      session.inconsistencies = appendInconsistencies(
+        session.inconsistencies,
+        local.conflicts,
+      );
+    }
+  }
+
   // 自我介绍：落盘 selfIntroText；不完整最多 1 次「补充」；之后（或已完整）必须 advance
   // 简历冲突可额外挑战 1 次，解释后同样必须 advance（见下方 pendingConflictChallenge 分支）
   if (
@@ -857,30 +932,45 @@ export function decideTurn(input: {
 
     enrichDigsWithSelfIntro(session);
 
-    // 自我介绍 vs 简历：实质性冲突时专业挑战一次，再进入主问题
+    // 自我介绍 vs 简历/事实：实质性冲突时立刻打断挑战，再进入主问题
     const introBlob = (session.selfIntroText || text || "").trim();
     if (introBlob.length >= INTRO_MIN && rt.resumeConflictProbeCount < 1) {
       const alreadyChallenged =
         (session.authenticityChallengeCount || 0) > 0 ||
         Boolean(session.pendingConflictChallenge);
-      let analysis = input.resumeAnalysis;
+      let analysis = resumeAnalysis;
       if (!analysis || analysis.severity === "none") {
-        const hit = detectResumeConflict(introBlob, session.resume, rt.question);
-        if (hit) {
-          analysis = {
-            conflict: true,
-            severity:
-              alreadyChallenged && (hit.level === 1 || hit.level === 3)
-                ? "integrity"
-                : "challenge",
-            level: hit.level,
-            kind: hit.kind,
-            resumeSide: hit.resumeSide,
-            answerSide: hit.answerSide,
-            utterance: craftResumeConflictUtterance(hit),
-            resumeExcerpt: hit.resumeExcerpt,
-            source: "heuristic",
-          };
+        const check = runConsistencyCheck({
+          answer: introBlob,
+          resume: session.resume,
+          selfIntroText: introBlob,
+          previousAnswers: [],
+          question: rt.question,
+        });
+        if (check.analysis.conflict) {
+          analysis = check.analysis;
+          session.inconsistencies = appendInconsistencies(
+            session.inconsistencies,
+            check.conflicts,
+          );
+        } else {
+          const hit = detectResumeConflict(introBlob, session.resume, rt.question);
+          if (hit) {
+            analysis = {
+              conflict: true,
+              severity:
+                alreadyChallenged && (hit.level === 1 || hit.level === 3)
+                  ? "integrity"
+                  : "challenge",
+              level: hit.level,
+              kind: hit.kind,
+              resumeSide: hit.resumeSide,
+              answerSide: hit.answerSide,
+              utterance: craftResumeConflictUtterance(hit),
+              resumeExcerpt: hit.resumeExcerpt,
+              source: "heuristic",
+            };
+          }
         }
       }
       if (
@@ -1204,6 +1294,14 @@ export function decideTurn(input: {
       signals.resumeConflictLevel = pending.level;
       pending.explainOutcome = outcome;
       session.resumeConflicts = [...(session.resumeConflicts || []), pending];
+      // 同步耐久 inconsistencies 的解释归类
+      if (session.inconsistencies?.length) {
+        session.inconsistencies = session.inconsistencies.map((inc) =>
+          !inc.explainOutcome || inc.explainOutcome === "pending"
+            ? { ...inc, explainOutcome: outcome }
+            : inc,
+        );
+      }
       session.pendingConflictChallenge = null;
 
       if (outcome === "admits_fabricate") {
@@ -1295,27 +1393,42 @@ export function decideTurn(input: {
       }
     }
 
-    // B) 新冲突检测
+    // B) 新冲突检测（全场一致性：简历 + 介绍 + 历史答）
     const alreadyChallenged =
       (session.authenticityChallengeCount || 0) > 0 || rt.resumeConflictProbeCount > 0;
-    let analysis = input.resumeAnalysis;
-    if (!analysis) {
-      const hit = detectResumeConflict(input.answer, session.resume, rt.question);
-      if (hit) {
-        analysis = {
-          conflict: true,
-          severity:
-            alreadyChallenged && (hit.level === 1 || hit.level === 3)
-              ? "integrity"
-              : "challenge",
-          level: hit.level,
-          kind: hit.kind,
-          resumeSide: hit.resumeSide,
-          answerSide: hit.answerSide,
-          utterance: craftResumeConflictUtterance(hit),
-          resumeExcerpt: hit.resumeExcerpt,
-          source: "heuristic",
-        };
+    let analysis = resumeAnalysis;
+    if (!analysis?.conflict) {
+      const check = runConsistencyCheck({
+        answer: input.answer,
+        resume: session.resume,
+        selfIntroText: session.selfIntroText,
+        previousAnswers: collectPreviousAnswers(session),
+        question: rt.question,
+      });
+      if (check.analysis.conflict) {
+        analysis = check.analysis;
+        session.inconsistencies = appendInconsistencies(
+          session.inconsistencies,
+          check.conflicts,
+        );
+      } else {
+        const hit = detectResumeConflict(input.answer, session.resume, rt.question);
+        if (hit) {
+          analysis = {
+            conflict: true,
+            severity:
+              alreadyChallenged && (hit.level === 1 || hit.level === 3)
+                ? "integrity"
+                : "challenge",
+            level: hit.level,
+            kind: hit.kind,
+            resumeSide: hit.resumeSide,
+            answerSide: hit.answerSide,
+            utterance: craftResumeConflictUtterance(hit),
+            resumeExcerpt: hit.resumeExcerpt,
+            source: "heuristic",
+          };
+        }
       }
     }
     // LLM 弱冲突且启发式无命中：早期调研阶段不挂起 pending，避免误伤

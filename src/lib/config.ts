@@ -30,7 +30,7 @@ export const DEMO_TRACKS: Array<{
   {
     id: "biz",
     label: "业务面",
-    hint: "业务面：自我介绍后进入简历深挖、学科专业题与编程（本次可不练）；追问 WHY/规模/职责，不复述简历已写事实。开场不告知题量",
+    hint: "业务面：自我介绍后进入简历深挖、学科专业题与编程；追问 WHY/规模/职责，不复述简历已写事实。开场不告知题量",
     enabled: true,
   },
   {
@@ -42,7 +42,7 @@ export const DEMO_TRACKS: Array<{
 ];
 
 /**
- * 业务面：自我介绍 + 约 4 主问题（简历深挖×2 → 学科专业题 → 编程本次可不练）。
+ * 业务面：自我介绍 + 约 4 主问题（简历深挖×2 → 学科专业题 → 编程）。
  * 偏技术深挖，允许更多 FOLLOW_UP / 分级提示。
  */
 export const PRESSURE_CONFIG: BehaviorConfig = {

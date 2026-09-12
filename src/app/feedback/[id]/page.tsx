@@ -116,6 +116,41 @@ export default function FeedbackPage() {
             </section>
           ) : null}
 
+          {feedback.inconsistencies && feedback.inconsistencies.length > 0 ? (
+            <section className="rounded-2xl border border-[var(--line)] bg-[var(--card)]/80 p-5">
+              <h2 className="mb-3 text-lg font-medium">一致性核查（按严重度）</h2>
+              {(["high", "medium", "low"] as const).map((sev) => {
+                const items = feedback.inconsistencies!.filter((i) => i.severity === sev);
+                if (!items.length) return null;
+                const label = sev === "high" ? "高" : sev === "medium" ? "中" : "低";
+                return (
+                  <div key={sev} className="mb-4 last:mb-0">
+                    <p className="mb-2 text-sm font-medium text-[var(--accent)]">
+                      {label}（{items.length}）
+                    </p>
+                    <ul className="space-y-2 text-sm">
+                      {items.map((inc) => (
+                        <li key={inc.id} className="border-b border-[var(--line)]/50 pb-2 last:border-0">
+                          <p className="font-medium">
+                            {inc.field} · {inc.issue}
+                          </p>
+                          {inc.explainOutcome ? (
+                            <p className="mt-1 text-xs text-[var(--accent-2)]">
+                              解释归类：{inc.explainOutcome}
+                            </p>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              })}
+              <p className="mt-3 text-xs text-[var(--muted)]">
+                改进建议：先对齐高优先级字段（姓名/学校/时间/公司/职位/GPA/数字），再统一项目角色与奖项表述。
+              </p>
+            </section>
+          ) : null}
+
           {feedback.techCorrectnessNotes && feedback.techCorrectnessNotes.length > 0 ? (
             <section className="rounded-2xl border border-[var(--line)] bg-[var(--card)]/80 p-5">
               <h2 className="mb-3 text-lg font-medium">技术正确性备注</h2>

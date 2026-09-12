@@ -3,12 +3,13 @@ import { getCodingProblem } from "@/lib/codingProblems";
 import { runCodingSubmission } from "@/lib/codingRunner";
 import { phaseOf, phaseLabel } from "@/lib/engine";
 import { generateFeedback } from "@/lib/deepseek";
+import { pickAdvancePrefix } from "@/lib/utterancePool";
 import { getSession, pushEvent, saveSession } from "@/lib/store";
 import type { CodingRunResult } from "@/lib/types";
 
 /**
- * 编程环节提交：跑测 → 记入 session → 推进下一题或结束并出反馈。
- * 也可 skip: true 表示本次先不练这道题、继续面试（不记硬性失败）。
+ * 编程环节提交：后台跑测并记入 session；面试中不宣判对错，评价仅进终局复盘。
+ * skip 仍可用但不在开场/主 UI 宣传。
  */
 export async function POST(req: Request) {
   try {
@@ -54,14 +55,14 @@ export async function POST(req: Request) {
         total: problem.tests.length,
         passedCount: 0,
         failedTests: [],
-        complexityNotes: body.notes || "（本次先不练这道题）",
+        complexityNotes: body.notes || "（本环节未提交代码）",
         skipped: true,
         ranAt: new Date().toISOString(),
       };
       session.codingResults = [...(session.codingResults || []), codingResult];
       pushEvent(session, "coding_skipped", codingResult);
       if (rt) {
-        rt.userAnswers.push("【编程】候选人选择本次先不练这道题、继续面试");
+        rt.userAnswers.push("【编程】候选人进入下一环节（未提交代码）");
       }
     } else {
       codingResult = runCodingSubmission({
@@ -72,13 +73,12 @@ export async function POST(req: Request) {
       session.codingResults = [...(session.codingResults || []), codingResult];
       pushEvent(session, "coding_result", codingResult);
 
-      const summary = codingResult.passed
-        ? `【编程通过】${codingResult.passedCount}/${codingResult.total}；复杂度备注：${codingResult.complexityNotes || "—"}`
-        : `【编程未全过】${codingResult.passedCount}/${codingResult.total}${
-            codingResult.error ? `；错误：${codingResult.error}` : ""
-          }；复杂度备注：${codingResult.complexityNotes || "—"}`;
+      // 面试中不向候选人暴露对错；答案摘要仅记内部事件，runtime 用中性文案
       if (rt) {
-        rt.userAnswers.push(summary);
+        rt.userAnswers.push(
+          `【编程已提交】复杂度备注：${codingResult.complexityNotes || "—"}`,
+        );
+        // 标签仍记，供复盘；不在 utterance 泄露
         if (codingResult.passed) {
           rt.tags = Array.from(new Set([...rt.tags, "confident_and_solid" as const]));
         }
@@ -89,17 +89,12 @@ export async function POST(req: Request) {
     let done = false;
     let utterance = "";
     let action: "ASK" | "FINISH" | "SKIP_SOFT" = "ASK";
+    const seed = session.currentIndex + (session.authenticityChallengeCount || 0);
 
     if (nextIndex >= session.queue.length) {
       done = true;
       action = body.skip ? "SKIP_SOFT" : "FINISH";
-      if (body.skip) {
-        utterance = "好的，那我们看下一个问题。本场问题到这里，我来整理结构化复盘。";
-      } else {
-        utterance = codingResult.passed
-          ? "编程题跑测通过了，本场问题到这里。我来整理结构化复盘。"
-          : `好，编程环节先到这里（${codingResult.passedCount}/${codingResult.total}）。本场到这里，我来整理复盘。`;
-      }
+      utterance = "好，本场问题到这里。我来整理结构化复盘，不当场宣判结果。";
     } else {
       session.currentIndex = nextIndex;
       const next = session.runtimes[nextIndex]!;
@@ -108,15 +103,9 @@ export async function POST(req: Request) {
         next.question.phase && next.question.phase !== "coding"
           ? `接下来进入${phaseLabel(next.question.phase)}。`
           : "";
-      if (body.skip) {
-        action = "SKIP_SOFT";
-        utterance = `行，那我们继续。${bridge}${next.question.prompt}`;
-      } else {
-        utterance = codingResult.passed
-          ? `编程用例过了。${bridge}${next.question.prompt}`
-          : `好的，那我们看下一个问题。${bridge}${next.question.prompt}`;
-        action = "ASK";
-      }
+      action = body.skip ? "SKIP_SOFT" : "ASK";
+      // 中性过渡：绝不提用例通过/失败数字
+      utterance = `${pickAdvancePrefix(seed)}${bridge}${next.question.prompt}`;
     }
 
     session.lastAction = action === "SKIP_SOFT" ? "SKIP_SOFT" : action;
@@ -129,6 +118,7 @@ export async function POST(req: Request) {
       questionId: session.queue[session.currentIndex]?.id,
       codingResult,
       skipped: Boolean(body.skip),
+      // 结果仅日志；响应里仍带 codingResult 供复盘页，但 utterance 不含对错
     });
 
     if (done) {

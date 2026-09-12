@@ -416,56 +416,20 @@ export function detectResumeConflict(
 
 /**
  * 专业挑战话术：永不说「你造假」。
- * 「简历写的是 A，你刚才说 B，不太一样，解释一下」
+ * 打断澄清口吻（多版轮换）。
  */
 export function craftResumeConflictUtterance(hit: ResumeConflictHit): string {
   const r = hit.resumeSide.slice(0, 40);
   const a = hit.answerSide.slice(0, 40);
-  const seed = (r.length * 7 + a.length * 3 + hit.level) % 3;
-  switch (hit.level) {
-    case 1: {
-      const lines = [
-        `简历写的是「${r}」，你刚才说「${a}」，不太一样，解释一下——哪边是可核验的事实？`,
-        `这边对不上：简历是「${r}」，你口述是「${a}」。以哪边为准？`,
-        `「${r}」和你刚才说的「${a}」有冲突，你展开说一下实际经历。`,
-      ];
-      return lines[seed]!;
-    }
-    case 2: {
-      const lines = [
-        `简历写的是「${r}」，你刚才更像在说「${a}」。你实际交付物是什么？边界在哪？`,
-        `角色口径不一致：简历「${r}」，口述「${a}」。你个人闭环的是哪一块？`,
-        `对照简历「${r}」，你刚才的「${a}」听起来职责不同——实际边界是什么？`,
-      ];
-      return lines[seed]!;
-    }
-    case 3: {
-      const lines = [
-        `简历侧是「${r}」，你口述强调「${a}」。哪一部分是你拍板/独立交付的？有没有评审或上线记录可以对照？`,
-        `贡献口径需要核实：简历「${r}」，你说「${a}」。你亲手交付的证据是什么？`,
-        `「${r}」和「${a}」差一截——你独立负责到哪一步？`,
-      ];
-      return lines[seed]!;
-    }
-    case 4: {
-      const lines = [
-        `这个点目前偏模糊。对照简历，你能补一个可核验的细节吗（数字、模块名或你亲手改的文件/接口）？`,
-        `先落到可核验细节：对照简历，补一个数字、模块或接口名就行。`,
-        `这块还不够实。你能对着简历给一个可核对的点吗？`,
-      ];
-      return lines[seed]!;
-    }
-    case 5: {
-      const lines = [
-        `简历写的是「${r}」，你刚才提到「${a}」。是哪个项目/阶段用的，还是自学/包装进简历的？`,
-        `技术栈对不上：简历「${r}」，口述「${a}」。分别用在什么场景？`,
-        `「${r}」和「${a}」怎么同时出现的？按项目拆开说一下。`,
-      ];
-      return lines[seed]!;
-    }
-    default:
-      return `简历写的是「${r}」，你刚才说「${a}」，不太一样，解释一下。`;
-  }
+  const issue = `简历写${r}，你刚才说${a}`;
+  const seed = (r.length * 7 + a.length * 3 + hit.level) % 4;
+  const lines = [
+    `等一下，我发现一个问题：${issue}。这是怎么回事？`,
+    `我打断一下，${issue}。你能解释一下吗？`,
+    `稍等，这里我需要澄清一下：${issue}。哪个是对的？`,
+    `我注意到一个矛盾的地方：${issue}。你能说明一下吗？`,
+  ];
+  return lines[seed]!;
 }
 
 /** 解释归类：OK → 简历表述不完整；混乱 → 诚信风险；忘记 → 记忆模糊；承认 → 造假 */
@@ -602,13 +566,13 @@ export function resumeJsonForConsistency(resume?: ResumeProfile): Record<string,
   };
 }
 
-/** 是否值得跑简历一致性分析 */
+/** 是否值得跑一致性分析（每答尽量核；编程题除外） */
 export function shouldAnalyzeResumeConsistency(
   answer: string,
   question?: Question,
 ): boolean {
   const text = answer.trim();
-  if (text.length < 12) return false;
+  if (text.length < 8) return false;
   if (
     /乱写|瞎写|编的|编造|杜撰|假的|造假|注水|假经历|挂名|其实不是我做的/.test(
       text,
@@ -617,22 +581,7 @@ export function shouldAnalyzeResumeConsistency(
     return false;
   }
   if (question?.isCoding) return false;
-  // 自我介绍也要对照简历（项目/公司/技术栈口径）
-  if (question?.phase === "self_intro" || question?.isSelfIntro) return true;
-  if (question?.fromResume) return true;
-  if (
-    /项目|简历|负责|经历|实习|公司|模块|接口|优化|指标|技术栈|我做了|主导|参与/.test(
-      text,
-    )
-  ) {
-    return true;
-  }
-  if (
-    /项目|简历|经历|负责|技术|协作|动机/.test(question?.prompt || "")
-  ) {
-    return true;
-  }
-  return false;
+  return true;
 }
 
 /**

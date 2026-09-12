@@ -105,6 +105,7 @@ export async function POST(req: Request) {
       authenticityChallengeCount: 0,
       currentPhase: queue[0]?.phase || "resume_deep_dive",
       resumeConflicts: [],
+      inconsistencies: [],
       codingResults: [],
       pendingConflictChallenge: null,
       selfIntroText: "",

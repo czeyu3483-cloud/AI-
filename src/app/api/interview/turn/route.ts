@@ -59,12 +59,25 @@ export async function POST(req: Request) {
       Boolean(currentRt && currentRt.resumeConflictProbeCount > 0) ||
       Boolean(session.pendingConflictChallenge);
 
+    const previousAnswers: string[] = [];
+    for (let i = 0; i < session.runtimes.length; i++) {
+      const rt = session.runtimes[i]!;
+      if (i === session.currentIndex) continue;
+      previousAnswers.push(...rt.userAnswers);
+    }
+    // 本题此前追问也算历史
+    if (currentRt && currentRt.userAnswers.length) {
+      previousAnswers.push(...currentRt.userAnswers);
+    }
+
     const [resumeAnalysis, topicRelevance] = await Promise.all([
       analyzeResumeConsistency({
         answer: body.answer || "",
         resume: session.resume,
         question: currentRt?.question,
         alreadyChallenged,
+        selfIntroText: session.selfIntroText,
+        previousAnswers,
       }),
       analyzeTopicRelevance({
         answer: body.answer || "",

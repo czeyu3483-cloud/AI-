@@ -12,6 +12,7 @@ import {
   polishRoleLine,
   scoreToBand,
 } from "./interviewerPolicy";
+import { runConsistencyCheck } from "./consistencyCheck";
 import {
   craftResumeConflictUtterance,
   detectResumeConflict,
@@ -200,47 +201,76 @@ export async function polishUtterance(input: {
 }
 
 /**
- * 简历一致性 Agent：对比 resume JSON(+rawText) + 当前题 + 口述。
- * LLM 优先；失败/无 key 时回落启发式。输出冲突等级 1–5。
+ * 全场一致性 Agent：对比简历字段 + 自我介绍 + 历史作答 + 当前口述。
+ * LLM 优先；失败/无 key 时回落启发式（含姓名/年份/公司/GPA 等）。
  */
 export async function analyzeResumeConsistency(input: {
   answer: string;
   resume?: ResumeProfile;
   question?: Question;
   alreadyChallenged: boolean;
+  selfIntroText?: string;
+  previousAnswers?: string[];
 }): Promise<ResumeConsistencyAnalysis> {
   const { answer, resume, question, alreadyChallenged } = input;
-  if (!resume || !shouldAnalyzeResumeConsistency(answer, question)) {
+  const fullCheck = runConsistencyCheck({
+    answer,
+    resume,
+    selfIntroText: input.selfIntroText,
+    previousAnswers: input.previousAnswers,
+    question,
+  });
+  const extras = fullCheck.conflicts;
+
+  if (!resume && !input.selfIntroText && !(input.previousAnswers || []).length) {
     return { conflict: false, severity: "none", source: "heuristic" };
+  }
+  if (!shouldAnalyzeResumeConsistency(answer, question) && !fullCheck.analysis.conflict) {
+    return {
+      conflict: false,
+      severity: "none",
+      source: "heuristic",
+      inconsistencies: extras,
+    };
   }
 
   const heuristicHit = detectResumeConflict(answer, resume, question);
-  const heuristic = heuristicToAnalysis(heuristicHit, alreadyChallenged);
+  let heuristic = heuristicToAnalysis(heuristicHit, alreadyChallenged);
+  // 全场事实核查优先：姓名/学校/公司等硬冲突立刻挑战
+  if (fullCheck.analysis.conflict && fullCheck.analysis.severity !== "none") {
+    if (!heuristic.conflict || (fullCheck.analysis.level || 5) <= (heuristic.level || 5)) {
+      heuristic = { ...fullCheck.analysis, inconsistencies: extras };
+    }
+  }
 
   const c = client();
-  if (!c) return heuristic;
+  if (!c) {
+    return { ...heuristic, inconsistencies: fullCheck.conflicts };
+  }
 
   try {
     const completion = await c.chat.completions.create({
       model: modelName(),
       temperature: 0.1,
-      max_tokens: 450,
+      max_tokens: 500,
       response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
           content:
-            "你是资深技术面试官的「简历一致性」助理。对比候选人简历（含 rawTextExcerpt）与口述。" +
-            "冲突等级 level：1直接矛盾 2角色漂移(整理材料vs沟通联络) 3贡献注水(参与→主导) 4细节模糊 5技术栈不符。" +
-            "补充细节、承认不会、说没做过相邻迁移 ≠ 冲突。" +
+            "你是资深技术面试官的「一致性」助理。对比：简历全文字段、自我介绍、历史作答、当前口述。" +
+            "必核字段：姓名/学校/专业/时间/公司/职位/项目名称/项目角色/技能/GPA/奖项/数字排名。" +
+            "冲突等级 level：1直接矛盾 2角色漂移 3贡献注水 4细节模糊 5技术栈不符。" +
             "severity：none=无；challenge=可质疑；integrity=明显造假/反复矛盾。" +
-            "utterance 必须专业：「简历写的是A，你刚才说B，不太一样，解释一下」；禁止说「你造假」。" +
-            "只输出 JSON：{conflict,severity,level,kind,resumeSide,answerSide,utterance,resumeExcerpt}。",
+            "utterance 用打断澄清口吻，例如「等一下，我发现一个问题：{issue}。这是怎么回事？」；多问题用「等一下，我发现了几个问题需要澄清：」。禁止说「你造假」。" +
+            "只输出 JSON：{conflict,severity,level,kind,resumeSide,answerSide,utterance,resumeExcerpt,issues:[{field,issue,sideA,sideB}]}。",
         },
         {
           role: "user",
           content: JSON.stringify({
             resume: resumeJsonForConsistency(resume),
+            selfIntroText: (input.selfIntroText || "").slice(0, 800),
+            previousAnswers: (input.previousAnswers || []).map((a) => a.slice(0, 400)).slice(-6),
             currentQuestion: question?.prompt || "",
             fromResume: Boolean(question?.fromResume),
             phase: question?.phase || null,
@@ -254,6 +284,11 @@ export async function analyzeResumeConsistency(input: {
                   answerSide: heuristicHit.answerSide,
                 }
               : null,
+            factCheckHint: fullCheck.conflicts.slice(0, 4).map((c) => ({
+              field: c.field,
+              issue: c.issue,
+              severity: c.severity,
+            })),
           }),
         },
       ],
@@ -263,9 +298,9 @@ export async function analyzeResumeConsistency(input: {
       | { content?: string | null; reasoning_content?: string | null }
       | undefined;
     const raw = (msg?.content || msg?.reasoning_content || "").trim();
-    if (!raw) return heuristic;
+    if (!raw) return { ...heuristic, inconsistencies: fullCheck.conflicts };
     const json = extractJsonObject(raw);
-    const conflict = Boolean(json.conflict);
+    const conflict = Boolean(json.conflict) || fullCheck.analysis.conflict;
     let severity = String(json.severity || "none") as ResumeConsistencyAnalysis["severity"];
     if (!["none", "challenge", "integrity"].includes(severity)) {
       severity = conflict ? "challenge" : "none";
@@ -275,15 +310,16 @@ export async function analyzeResumeConsistency(input: {
     const kind = String(json.kind || heuristicHit?.kind || "other") as ResumeConflictKind;
     let level = Number(json.level) as ResumeConflictLevel;
     if (![1, 2, 3, 4, 5].includes(level)) {
-      level = heuristicHit?.level || levelForKind(kind);
+      level = heuristicHit?.level || fullCheck.analysis.level || levelForKind(kind);
     }
 
-    // 已挑战过仍冲突 → 仅当本题内硬冲突才 integrity（由引擎再判）
     if (conflict && alreadyChallenged && (level === 1 || level === 3) && severity === "challenge") {
-      // 保留 challenge，交给引擎按 resumeConflictProbeCount 决定是否结束
       severity = "challenge";
     }
     if (!conflict) {
+      if (fullCheck.analysis.conflict) {
+        return { ...fullCheck.analysis, inconsistencies: fullCheck.conflicts };
+      }
       if (
         heuristicHit &&
         (heuristicHit.kind === "ownership" ||
@@ -294,12 +330,11 @@ export async function analyzeResumeConsistency(input: {
           heuristicHit.kind === "direct_contradiction" ||
           heuristicHit.kind === "stack_mismatch")
       ) {
-        return heuristic;
+        return { ...heuristic, inconsistencies: fullCheck.conflicts };
       }
-      return { conflict: false, severity: "none", source: "llm" };
+      return { conflict: false, severity: "none", source: "llm", inconsistencies: fullCheck.conflicts };
     }
-    // LLM 判冲突但启发式无命中：仅保留栈/指标等硬冲突，避免职责表述误伤
-    if (!heuristicHit) {
+    if (!heuristicHit && !fullCheck.analysis.conflict) {
       const hard = new Set([
         "direct_contradiction",
         "stack_mismatch",
@@ -307,29 +342,37 @@ export async function analyzeResumeConsistency(input: {
         "metric",
       ]);
       if (!hard.has(kind)) {
-        return { conflict: false, severity: "none", source: "llm" };
+        return { conflict: false, severity: "none", source: "llm", inconsistencies: fullCheck.conflicts };
       }
     }
-    const resumeSide = String(json.resumeSide || heuristicHit?.resumeSide || "").slice(0, 80);
-    const answerSide = String(json.answerSide || heuristicHit?.answerSide || "").slice(0, 80);
+    const resumeSide = String(
+      json.resumeSide || heuristicHit?.resumeSide || fullCheck.analysis.resumeSide || "",
+    ).slice(0, 80);
+    const answerSide = String(
+      json.answerSide || heuristicHit?.answerSide || fullCheck.analysis.answerSide || "",
+    ).slice(0, 80);
     const utterance =
       String(json.utterance || "").trim() ||
+      fullCheck.analysis.utterance ||
       (heuristicHit
         ? craftResumeConflictUtterance(heuristicHit)
-        : "简历写的是一边，你刚才说的是另一边，不太一样，解释一下。");
+        : "等一下，我发现一个问题：口径不太一致。这是怎么回事？");
     return {
       conflict: true,
-      severity,
+      severity: severity === "none" ? "challenge" : severity,
       level,
       kind,
       resumeSide,
       answerSide,
-      utterance: utterance.slice(0, 140),
-      resumeExcerpt: String(json.resumeExcerpt || heuristicHit?.resumeExcerpt || "").slice(0, 200),
+      utterance: utterance.slice(0, 220),
+      resumeExcerpt: String(
+        json.resumeExcerpt || heuristicHit?.resumeExcerpt || "",
+      ).slice(0, 200),
       source: "llm",
+      inconsistencies: fullCheck.conflicts,
     };
   } catch {
-    return heuristic;
+    return { ...heuristic, inconsistencies: fullCheck.conflicts };
   }
 }
 
@@ -589,6 +632,9 @@ function sessionHasVagueTag(session: InterviewSession): boolean {
 
 function sessionHasAuthenticityRisk(session: InterviewSession): boolean {
   if (session.sessionTags?.includes("authenticity_risk")) return true;
+  if ((session.inconsistencies || []).some((i) => i.severity === "high" || i.severity === "medium")) {
+    return true;
+  }
   return session.runtimes.some((rt) => rt.tags.includes("authenticity_risk"));
 }
 
@@ -810,6 +856,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
   const trackLabel = TRACK_FOCUS[trackId].label;
   const levelLabel = CANDIDATE_LEVEL_LABEL[level];
   const resumeConflicts = [...(session.resumeConflicts || [])];
+  const inconsistencies = [...(session.inconsistencies || [])];
   const codingResults = [...(session.codingResults || [])];
   const techCorrectnessNotes = collectTechCorrectnessNotes(session);
   const resumeRawExcerpt = (session.resume?.rawText || "").slice(0, 1200);
@@ -821,6 +868,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
         c.explainOutcome === "admits_fabricate" ||
         (c.level === 1 && c.explainOutcome !== "ok_incomplete_resume"),
     ) ||
+    inconsistencies.some((i) => i.severity === "high" && i.explainOutcome !== "ok_incomplete_resume") ||
     (authenticityRisk &&
       resumeConflicts.some(
         (c) =>
@@ -844,7 +892,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
       `以下仍给出各能力维度评分供复盘（诚信维单独标为严重）；本报告不做录用结论。`
     : trackId === "hr_final"
       ? `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}）。整体完成了主流程；建议用具体协作场景、动机证据与上手计划证明适配度。本报告不做录用结论。`
-      : `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}）。流程含自我介绍、简历深挖、学科专业题与编程（编程本次可不练）；建议继续用 WHY/规模/职责与边界证明实践深度。本报告不做录用结论。`;
+      : `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}）。流程含自我介绍、简历深挖、学科专业题与编程；建议继续用 WHY/规模/职责与边界证明实践深度。本报告不做录用结论。`;
 
   let dimensions = heuristicDimensionScores(
     session,
@@ -877,12 +925,35 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
     recommendation,
   });
 
+  const bySev = {
+    high: inconsistencies.filter((i) => i.severity === "high"),
+    medium: inconsistencies.filter((i) => i.severity === "medium"),
+    low: inconsistencies.filter((i) => i.severity === "low"),
+  };
   const conflictSummary =
-    resumeConflicts.length > 0
-      ? ` 简历冲突 ${resumeConflicts.length} 条（等级 ${resumeConflicts
-          .map((c) => c.level)
-          .join("/")}）。`
-      : "";
+    inconsistencies.length > 0
+      ? ` 一致性问题 ${inconsistencies.length} 条（高${bySev.high.length}/中${bySev.medium.length}/低${bySev.low.length}）。`
+      : resumeConflicts.length > 0
+        ? ` 简历冲突 ${resumeConflicts.length} 条（等级 ${resumeConflicts
+            .map((c) => c.level)
+            .join("/")}）。`
+        : "";
+
+  const consistencyTips: string[] = [];
+  if (bySev.high.length) {
+    consistencyTips.push(
+      `高优先级对齐：${bySev.high
+        .slice(0, 3)
+        .map((i) => i.issue)
+        .join("；")}`,
+    );
+  }
+  if (bySev.medium.length) {
+    consistencyTips.push("中优先级：统一项目角色、专业与奖项等表述，避免前后口径漂移");
+  }
+  if (bySev.low.length) {
+    consistencyTips.push("低优先级：技能族表述与简历对齐即可，不必过度解释");
+  }
 
   const fallback: FeedbackReport = {
     overallSummary: ensureIntegritySummary(
@@ -953,7 +1024,12 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
         ]
       : trackId === "hr_final"
         ? ["准备 2 个协作冲突小故事", "写清「为什么研发 + 为什么现在」", "列出入职前三月上手清单"]
-        : ["准备量化结果的项目故事", "每题主动讲清取舍与边界", "用故障复盘练排查路径"],
+        : [
+            ...(consistencyTips.length ? consistencyTips : []),
+            "准备量化结果的项目故事",
+            "每题主动讲清取舍与边界",
+            "用故障复盘练排查路径",
+          ].slice(0, 5),
     roleId: session.roleId,
     trackId,
     candidateLevel: level,
@@ -963,9 +1039,10 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
     authenticityRisk: authenticityRisk || integrityBreach || undefined,
     integritySevere: integrityBreach || undefined,
     recommendation,
-    nextRoundAdvice,
+    nextRoundAdvice: [...consistencyTips, ...nextRoundAdvice].slice(0, 6),
     integrityRiskFlag: integrityRiskFlag || undefined,
     resumeConflicts,
+    inconsistencies,
     techCorrectnessNotes,
     codingResults,
     resumeRawExcerpt: resumeRawExcerpt || undefined,
@@ -1021,6 +1098,12 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
             authenticityRisk,
             integrityBreach,
             resumeConflicts,
+            inconsistencies: inconsistencies.map((i) => ({
+              field: i.field,
+              severity: i.severity,
+              issue: i.issue,
+              explainOutcome: i.explainOutcome,
+            })),
             codingResults: codingResults.map((cr) => ({
               problemId: cr.problemId,
               title: cr.title,
@@ -1139,6 +1222,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
       nextRoundAdvice: advice,
       integrityRiskFlag: integrityRiskFlag || undefined,
       resumeConflicts,
+      inconsistencies,
       techCorrectnessNotes: techNotes,
       codingResults,
       resumeRawExcerpt: resumeRawExcerpt || undefined,

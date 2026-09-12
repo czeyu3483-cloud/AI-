@@ -59,6 +59,17 @@ export async function GET(
       if (c.resumeExcerpt) write(`  excerpt: ${c.resumeExcerpt}`);
     }
   }
+  if (fb.inconsistencies?.length) {
+    write("Consistency issues by severity:");
+    for (const sev of ["high", "medium", "low"] as const) {
+      const items = fb.inconsistencies.filter((i) => i.severity === sev);
+      if (!items.length) continue;
+      write(`- ${sev}:`);
+      for (const i of items) {
+        write(`  · [${i.field}] ${i.issue}${i.explainOutcome ? ` (${i.explainOutcome})` : ""}`);
+      }
+    }
+  }
   if (fb.techCorrectnessNotes?.length) {
     write("Tech correctness:");
     for (const n of fb.techCorrectnessNotes) write(`- [${n.severity}] ${n.note}`);

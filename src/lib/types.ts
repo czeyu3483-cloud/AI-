@@ -107,7 +107,7 @@ export type Question = {
   fromResume?: boolean;
   /** 开场自我介绍（计入流程，但不等同于 4 道主问题） */
   isSelfIntro?: boolean;
-  /** 编程题：可不练本题、继续面试；走编辑器提交 */
+  /** 编程题：编辑器提交；对错仅终局复盘展示 */
   isCoding?: boolean;
   codingProblemId?: string;
   /** 学科专业题库条目 id（Q3）；标准答案仅用于反馈打分 */
@@ -231,6 +231,61 @@ export type ResumeConflictRecord = {
   source?: "llm" | "heuristic";
 };
 
+/** 一致性核查字段（每答必核） */
+export type FactField =
+  | "姓名"
+  | "学校"
+  | "专业"
+  | "时间"
+  | "公司"
+  | "职位"
+  | "项目名称"
+  | "项目角色"
+  | "技能"
+  | "GPA"
+  | "奖项"
+  | "数字/排名";
+
+export type FactSeverity = "high" | "medium" | "low";
+
+export const FACT_FIELD_SEVERITY: Record<FactField, FactSeverity> = {
+  姓名: "high",
+  学校: "high",
+  专业: "medium",
+  时间: "high",
+  公司: "high",
+  职位: "high",
+  项目名称: "medium",
+  项目角色: "high",
+  技能: "low",
+  GPA: "high",
+  奖项: "medium",
+  "数字/排名": "high",
+};
+
+export type InconsistencySource =
+  | "resume"
+  | "self_intro"
+  | "previous_answer"
+  | "current_answer";
+
+/** 场次级耐久不一致记录（终局按 severity 汇总） */
+export type InconsistencyRecord = {
+  id: string;
+  field: FactField;
+  severity: FactSeverity;
+  /** 可读对比，如「简历写张三，你刚才说李四」 */
+  issue: string;
+  sideA: string;
+  sideB: string;
+  sourceA: InconsistencySource;
+  sourceB: InconsistencySource;
+  questionId?: string;
+  utterance?: string;
+  explainOutcome?: ConflictExplainOutcome;
+  detectedAt: string;
+};
+
 export type CodingTestCase = {
   name: string;
   args: unknown[];
@@ -302,6 +357,8 @@ export type FeedbackReport = {
   integrityRiskFlag?: boolean;
   /** 简历冲突清单（含等级与证据） */
   resumeConflicts?: ResumeConflictRecord[];
+  /** 全场一致性不一致（按字段/severity；终局汇总） */
+  inconsistencies?: InconsistencyRecord[];
   /** 技术正确性备注 */
   techCorrectnessNotes?: TechCorrectnessNote[];
   /** 编程环节跑测结果 */
@@ -338,6 +395,8 @@ export type InterviewSession = {
   currentPhase?: InterviewPhase;
   /** 本场累积的简历冲突记录（含等级） */
   resumeConflicts?: ResumeConflictRecord[];
+  /** 耐久不一致列表：每答核查后追加，终局按 severity 汇总 */
+  inconsistencies?: InconsistencyRecord[];
   /** 编程题跑测记录 */
   codingResults?: CodingRunResult[];
   /** 待裁决的冲突挑战（等下一答解释） */
@@ -379,4 +438,6 @@ export type ResumeConsistencyAnalysis = {
   /** 简历原文摘录证据 */
   resumeExcerpt?: string;
   source: "llm" | "heuristic";
+  /** 本轮检出的字段级不一致（写入 session.inconsistencies） */
+  inconsistencies?: InconsistencyRecord[];
 };

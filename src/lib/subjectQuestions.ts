@@ -193,7 +193,7 @@ export function pickSubjectQuestion(seed = Date.now(), resumeBlob = ""): Subject
   return use[Math.abs(seed) % use.length]!;
 }
 
-/** 启发式对照标准答案要点打分 1–5（反馈用，非面试当场） */
+/** 启发式对照标准答案要点打分 1–5（反馈用，非面试当场；评分偏宽松） */
 export function scoreSubjectAnswer(
   answer: string,
   item: Pick<SubjectQuestion, "standardAnswer" | "gradingCriteria" | "prompt">,
@@ -208,10 +208,12 @@ export function scoreSubjectAnswer(
     .filter((s) => s.length >= 2 && s.length <= 24);
   const hit = keys.filter((k) => text.includes(k.slice(0, Math.min(6, k.length)))).length;
   const ratio = keys.length ? hit / Math.min(keys.length, 6) : 0;
-  let score = 2;
-  if (ratio >= 0.5 && text.length >= 40) score = 4;
-  else if (ratio >= 0.3 || text.length >= 80) score = 3;
-  else if (text.length >= 30) score = 2;
+  // 合理作答从中档起评，避免过严
+  let score = 3;
+  if (ratio >= 0.5 && text.length >= 40) score = 5;
+  else if (ratio >= 0.3 || text.length >= 60) score = 4;
+  else if (text.length >= 30) score = 3;
+  else if (text.length >= 16) score = 2;
   else score = 1;
   if (/不会|不知道|没学过|不清楚/.test(text) && text.length < 40) score = Math.min(score, 2);
   return {
