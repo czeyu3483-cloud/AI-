@@ -17,7 +17,8 @@ export default function HomePage() {
     () =>
       roleId === "rd_general" &&
       styleId === "pressure" &&
-      (trackId === "biz" || trackId === "hr_final") &&
+      trackId === "biz" &&
+      Boolean(DEMO_TRACKS.find((t) => t.id === "biz")?.enabled) &&
       Boolean(resumeText.trim()),
     [roleId, styleId, trackId, resumeText],
   );
@@ -172,7 +173,7 @@ export default function HomePage() {
         </div>
         <p className="mt-3 text-xs text-[var(--muted)]">
           {DEMO_TRACKS.find((t) => t.id === trackId)?.hint ||
-            "业务面偏技术深挖；HR终面偏适配与动机。"}
+            "业务面约 4 题深挖；HR终面暂不可选。"}
         </p>
       </section>
 

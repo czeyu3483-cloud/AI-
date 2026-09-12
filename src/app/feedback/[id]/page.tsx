@@ -136,7 +136,13 @@ export default function FeedbackPage() {
                 {feedback.codingResults.map((cr) => (
                   <li key={`${cr.problemId}-${cr.ranAt}`}>
                     <p className="font-medium">
-                      {cr.title}：{cr.passed ? "通过" : "未全过"}（{cr.passedCount}/{cr.total}）
+                      {cr.title}：
+                      {cr.skipped
+                        ? "已跳过"
+                        : cr.passed
+                          ? "通过"
+                          : "未全过"}
+                      {cr.skipped ? "" : `（${cr.passedCount}/${cr.total}）`}
                     </p>
                     {cr.complexityNotes ? (
                       <p className="text-[var(--muted)]">复杂度备注：{cr.complexityNotes}</p>

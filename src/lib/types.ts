@@ -247,6 +247,8 @@ export type CodingRunResult = {
   error?: string;
   durationMs?: number;
   ranAt: string;
+  /** 候选人主动跳过编程题（不记硬性失败） */
+  skipped?: boolean;
 };
 
 export type TechCorrectnessNote = {

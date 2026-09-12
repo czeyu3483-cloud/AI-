@@ -620,10 +620,12 @@ function collectTechCorrectnessNotes(session: InterviewSession): TechCorrectness
   for (const cr of session.codingResults || []) {
     notes.push({
       questionId: cr.problemId,
-      note: cr.passed
-        ? `编程用例全过（${cr.passedCount}/${cr.total}）${cr.complexityNotes ? `；${cr.complexityNotes}` : ""}`
-        : `编程未全过（${cr.passedCount}/${cr.total}）${cr.error ? `；${cr.error}` : ""}`,
-      severity: cr.passed ? "info" : "warn",
+      note: cr.skipped
+        ? "编程题已跳过（不记硬性失败）"
+        : cr.passed
+          ? `编程用例全过（${cr.passedCount}/${cr.total}）${cr.complexityNotes ? `；${cr.complexityNotes}` : ""}`
+          : `编程未全过（${cr.passedCount}/${cr.total}）${cr.error ? `；${cr.error}` : ""}`,
+      severity: cr.skipped || cr.passed ? "info" : "warn",
     });
   }
   return notes.slice(0, 12);
@@ -647,13 +649,13 @@ function deriveRecommendation(input: {
   const scored = input.dimensions.filter((d) => !/诚信/.test(d.dimension));
   const avg =
     scored.reduce((s, d) => s + d.score, 0) / Math.max(1, scored.length);
-  const codingOk = (input.codingResults || []).some((c) => c.passed);
+  const meaningfulCoding = (input.codingResults || []).filter((c) => !c.skipped);
+  const codingOk = meaningfulCoding.some((c) => c.passed);
   const codingFail =
-    (input.codingResults || []).length > 0 &&
-    (input.codingResults || []).every((c) => !c.passed);
+    meaningfulCoding.length > 0 && meaningfulCoding.every((c) => !c.passed);
 
   if (input.authenticityRisk && avg < 3) return "不推荐";
-  if (avg >= 3.6 && !input.vague && (codingOk || !(input.codingResults || []).length)) {
+  if (avg >= 3.6 && !input.vague && (codingOk || !meaningfulCoding.length)) {
     return "推荐通过";
   }
   if (avg >= 3 && !hasL1 && !codingFail) return "推荐通过";
@@ -679,8 +681,11 @@ function buildNextRoundAdvice(input: {
   if (input.vague) {
     tips.push("每题准备「我做了什么 / 场景 / 怎么验证」三句话，避免空泛");
   }
-  if ((input.codingResults || []).some((c) => !c.passed)) {
+  if ((input.codingResults || []).some((c) => !c.passed && !c.skipped)) {
     tips.push("补一道同类型手写题，并口述时间/空间复杂度");
+  }
+  if ((input.codingResults || []).some((c) => c.skipped)) {
+    tips.push("下一轮可补做一道简易手写题，熟悉边写边讲复杂度");
   }
   if (input.trackId === "hr_final") {
     tips.push("准备 2 个协作冲突小故事与「为什么研发」证据链");

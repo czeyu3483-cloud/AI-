@@ -28,7 +28,7 @@ export function CodingStep({ problem, sessionId, disabled, onSubmitted }: Props)
 
   const title = useMemo(() => problem.title, [problem.title]);
 
-  async function submit() {
+  async function submit(opts?: { skip?: boolean }) {
     if (busy || disabled) return;
     setBusy(true);
     setError("");
@@ -39,12 +39,13 @@ export function CodingStep({ problem, sessionId, disabled, onSubmitted }: Props)
         body: JSON.stringify({
           sessionId,
           problemId: problem.id,
-          code,
-          notes,
+          code: opts?.skip ? "" : code,
+          notes: opts?.skip ? "（已跳过）" : notes,
+          skip: Boolean(opts?.skip),
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "提交失败");
+      if (!res.ok) throw new Error(data.error || (opts?.skip ? "跳过失败" : "提交失败"));
       const result = data.codingResult as CodingRunResult;
       setLastResult(result);
       onSubmitted({
@@ -58,7 +59,7 @@ export function CodingStep({ problem, sessionId, disabled, onSubmitted }: Props)
         phase: data.phase,
       });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "提交失败");
+      setError(e instanceof Error ? e.message : opts?.skip ? "跳过失败" : "提交失败");
     } finally {
       setBusy(false);
     }
@@ -70,6 +71,7 @@ export function CodingStep({ problem, sessionId, disabled, onSubmitted }: Props)
         <p className="text-xs tracking-[0.16em] text-[var(--accent)]">CODING</p>
         <h2 className="text-lg font-semibold">{title}</h2>
         <p className="text-sm leading-6 text-[var(--muted)]">{problem.prompt}</p>
+        <p className="text-xs text-[var(--muted)]">不想做也可以跳过，不影响正常收尾。</p>
       </header>
 
       <label className="block text-xs text-[var(--muted)]">
@@ -102,17 +104,31 @@ export function CodingStep({ problem, sessionId, disabled, onSubmitted }: Props)
           onClick={() => void submit()}
           className="rounded-full bg-[var(--accent)] px-5 py-2.5 text-sm font-semibold text-[#042a26] disabled:opacity-50"
         >
-          {busy ? "跑测中…" : "运行测试并提交"}
+          {busy ? "处理中…" : "运行测试并提交"}
+        </button>
+        <button
+          type="button"
+          disabled={busy || disabled}
+          onClick={() => void submit({ skip: true })}
+          className="rounded-full border border-[var(--line)] px-5 py-2.5 text-sm text-[var(--muted)] disabled:opacity-50"
+        >
+          跳过
         </button>
         {lastResult ? (
           <span
             className={`text-sm ${
-              lastResult.passed ? "text-[var(--accent)]" : "text-[var(--danger)]"
+              lastResult.skipped
+                ? "text-[var(--muted)]"
+                : lastResult.passed
+                  ? "text-[var(--accent)]"
+                  : "text-[var(--danger)]"
             }`}
           >
-            {lastResult.passed
-              ? `通过 ${lastResult.passedCount}/${lastResult.total}`
-              : `未全过 ${lastResult.passedCount}/${lastResult.total}`}
+            {lastResult.skipped
+              ? "已跳过"
+              : lastResult.passed
+                ? `通过 ${lastResult.passedCount}/${lastResult.total}`
+                : `未全过 ${lastResult.passedCount}/${lastResult.total}`}
           </span>
         ) : null}
       </div>
@@ -121,7 +137,7 @@ export function CodingStep({ problem, sessionId, disabled, onSubmitted }: Props)
       {lastResult?.error ? (
         <p className="text-sm text-[var(--danger)]">{lastResult.error}</p>
       ) : null}
-      {lastResult && lastResult.failedTests.length > 0 ? (
+      {lastResult && !lastResult.skipped && lastResult.failedTests.length > 0 ? (
         <ul className="space-y-1 text-xs text-[var(--muted)]">
           {lastResult.failedTests.map((t) => (
             <li key={t.name}>

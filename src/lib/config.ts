@@ -20,7 +20,7 @@ export const DEMO_STYLES: Array<{ id: StyleId; label: string; enabled: boolean }
   { id: "random", label: "随机", enabled: false },
 ];
 
-/** 研发岗下第二层选择；目前仅 rd_general 开放 */
+/** 研发岗下第二层选择；目前仅业务面可选，HR终面可见但暂不可选 */
 export const DEMO_TRACKS: Array<{
   id: TrackId;
   label: string;
@@ -30,19 +30,19 @@ export const DEMO_TRACKS: Array<{
   {
     id: "biz",
     label: "业务面",
-    hint: "简历调研→深挖→专业题→编程；追问细节与取舍，不编无关题库",
+    hint: "约 4 题：简历深挖×2 → 专业情景 → 编程（可跳过）；追问 WHY/规模/职责，不复述简历已写事实",
     enabled: true,
   },
   {
     id: "hr_final",
     label: "HR终面",
-    hint: "简历协作切入 → 适配/动机/协作；中立不中途夸赞",
-    enabled: true,
+    hint: "简历协作切入 → 适配/动机/协作；中立不中途夸赞（暂不可选）",
+    enabled: false,
   },
 ];
 
 /**
- * 业务面：按 ~30–40 分钟语音面设计（约 8 主问题：调研/深挖/专业/编程）。
+ * 业务面：约 4 主问题（简历深挖×2 → 专业情景 → 编程可跳过）。
  * 偏技术深挖，允许更多 FOLLOW_UP / 分级提示。
  */
 export const PRESSURE_CONFIG: BehaviorConfig = {
@@ -55,7 +55,7 @@ export const PRESSURE_CONFIG: BehaviorConfig = {
   maxHintsPerQuestion: 3,
   maxReframesPerQuestion: 1,
   minAnswerChars: 30,
-  questionsPerSession: 8,
+  questionsPerSession: 4,
   allowFirstHintOnRequest: true,
   answerSoftLimitSec: 90,
   answerHardLimitSec: 140,

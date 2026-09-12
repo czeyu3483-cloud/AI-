@@ -31,7 +31,7 @@ export function buildOpeningLine(input: {
   const focus =
     input.trackId === "hr_final"
       ? "主要了解你的动机、协作方式和职业规划，轻松把经历讲清楚就行"
-      : "主要了解你的项目经历和基础功底，你把思路讲清楚就行";
+      : "大概 4 个问题，围绕项目深挖和一道可跳过的编程题，你把思路讲清楚就行";
   return (
     `${hello}，我是今天的面试官${input.interviewerName}。` +
     `今天大概聊 ${input.questionCount} 个问题，${focus}。` +

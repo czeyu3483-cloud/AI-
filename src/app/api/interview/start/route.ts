@@ -30,7 +30,13 @@ export async function POST(req: Request) {
     };
     const roleId = body.roleId ?? "rd_general";
     const styleId = body.styleId ?? "pressure";
-    const trackId: TrackId = body.trackId === "hr_final" ? "hr_final" : "biz";
+    if (body.trackId === "hr_final") {
+      return NextResponse.json(
+        { error: "当前 Demo HR终面暂不可选（界面可见但未开放）" },
+        { status: 400 },
+      );
+    }
+    const trackId: TrackId = "biz";
     assertDemoSelection(roleId, styleId, trackId);
 
     const resume = body.resume
@@ -97,7 +103,7 @@ export async function POST(req: Request) {
       interviewerName,
       sessionTags: [],
       authenticityChallengeCount: 0,
-      currentPhase: queue[0]?.phase || (trackId === "hr_final" ? "hr_fit" : "resume_research"),
+      currentPhase: queue[0]?.phase || "resume_deep_dive",
       resumeConflicts: [],
       codingResults: [],
       pendingConflictChallenge: null,

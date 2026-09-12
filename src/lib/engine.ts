@@ -55,8 +55,11 @@ import type {
 export function assertDemoSelection(roleId: RoleId, styleId: StyleId, trackId?: TrackId) {
   if (roleId !== "rd_general") throw new Error("当前 Demo 仅开放研发岗（其他岗位暂不可选）");
   if (styleId !== "pressure") throw new Error("当前 Demo 仅开放压力面（其他风格暂不可选）");
-  if (trackId && trackId !== "biz" && trackId !== "hr_final") {
-    throw new Error("当前 Demo 仅开放业务面或 HR终面");
+  if (trackId === "hr_final") {
+    throw new Error("当前 Demo HR终面暂不可选（界面可见但未开放）");
+  }
+  if (trackId && trackId !== "biz") {
+    throw new Error("当前 Demo 仅开放业务面");
   }
 }
 
@@ -127,39 +130,32 @@ export function buildQuestionQueue(
     return [...fromResume, ...fromExp, ...hrBank].slice(0, cfg.questionsPerSession);
   }
 
-  // —— 业务面：显式四阶段（简历调研 → 深挖 → 专业题 → 编程）——
+  // —— 业务面：约 4 主问题 ——
+  // Q1–Q2 简历深挖（WHY / 规模 / 所有权 / 失败）；禁止复述简历已写事实
+  // Q3 专业情景；Q4 编程（可跳过）
   const primary = resume?.projects?.[0];
   const secondary = resume?.projects?.[1];
   const stackHint = (primary?.stack || resume?.skills || []).slice(0, 4);
   const stackKnown = stackHint.length > 0;
+  const digTarget = primary?.name;
+  const altStack =
+    stackHint[0] && /react/i.test(stackHint[0])
+      ? "Vue"
+      : stackHint[0] && /vue/i.test(stackHint[0])
+        ? "React"
+        : "更常见的替代方案";
 
-  const research: Question[] = [];
-  if (primary) {
-    research.push({
-      id: "biz_research_bg",
+  const digs: Question[] = [];
+  if (primary && digTarget) {
+    digs.push({
+      id: "biz_dig_why_scale",
       roleId: "rd_general",
       trackId: "biz",
-      phase: "resume_research",
-      prompt: `先了解一下简历里的「${primary.name}」：项目背景是什么，你当时的角色，最终结果怎么衡量？`,
-      intent: "resume_research_bg",
-      followUpHints: ["背景", "角色", "指标", ...(primary.highlights || [])],
-      rubrics: [
-        { dimension: "ownership", weight: 0.5, good: "角色清晰", poor: "空泛" },
-        { dimension: "impact", weight: 0.5, good: "有可验证结果", poor: "无结果" },
-      ],
-      referencePoints: stackHint,
-      fromResume: true,
-    });
-    // 已有栈 → 不问「用了什么框架」，改问 WHY / 规模 / 状态与取舍
-    research.push({
-      id: "biz_research_tradeoff",
-      roleId: "rd_general",
-      trackId: "biz",
-      phase: "resume_research",
+      phase: "resume_deep_dive",
       prompt: stackKnown
-        ? `「${primary.name}」里你用过${stackHint.slice(0, 2).join("、")}——为什么这么选？规模大概怎样，状态/列表这类难点你怎么处理的？`
-        : `「${primary.name}」里最关键的技术取舍是什么？为什么这么选，什么场景下你会换方案？`,
-      intent: "resume_research_tradeoff",
+        ? `「${digTarget}」里你用过${stackHint.slice(0, 2).join("、")}——为什么选它，而不是${altStack}？数据量大概多大，列表/状态这类难点你怎么处理的？`
+        : `「${digTarget}」里最关键的一次技术取舍是什么？为什么这么选，规模与约束大概怎样？`,
+      intent: "resume_dig_why_scale",
       followUpHints: ["取舍理由", "规模", "虚拟列表/状态", ...(primary.highlights || [])],
       rubrics: [
         { dimension: "tradeoff", weight: 0.5, good: "讲清为何选", poor: "无取舍" },
@@ -168,24 +164,13 @@ export function buildQuestionQueue(
       referencePoints: stackHint,
       fromResume: true,
     });
-  } else {
-    research.push({
-      ...RD_QUESTIONS[0]!,
-      id: "biz_research_fallback",
-      phase: "resume_research",
-      fromResume: false,
-    });
-  }
-
-  const deepDive: Question[] = [];
-  if (primary) {
-    deepDive.push({
-      id: "biz_deep_ownership",
+    digs.push({
+      id: "biz_dig_ownership",
       roleId: "rd_general",
       trackId: "biz",
       phase: "resume_deep_dive",
-      prompt: `再往下挖「${primary.name}」：哪个模块是你个人真正负责的？出过错或失败方案吗，你怎么收的？`,
-      intent: "resume_deep_ownership",
+      prompt: `再往下挖「${digTarget}」：哪个模块是你个人真正负责的？出过错或失败方案吗，你怎么收的？`,
+      intent: "resume_dig_ownership",
       followUpHints: ["模块边界", "失败", "协作", ...(primary.highlights || [])],
       rubrics: [
         { dimension: "ownership", weight: 0.5, good: "落到个人动作", poor: "复述宣传语" },
@@ -194,55 +179,104 @@ export function buildQuestionQueue(
       referencePoints: primary.highlights || [],
       fromResume: true,
     });
-  }
-  if (secondary) {
-    deepDive.push({
-      id: "biz_deep_collab",
+  } else if (secondary) {
+    digs.push({
+      id: "biz_dig_secondary_why",
       roleId: "rd_general",
       trackId: "biz",
       phase: "resume_deep_dive",
-      prompt: `「${secondary.name}」里你和协作方怎么拆活？有没有职责边界说不清的时候？`,
-      intent: "resume_deep_collab",
-      followUpHints: ["协作", "边界", ...(secondary.highlights || [])],
+      prompt: `「${secondary.name}」里最难的一次取舍是什么？为什么这么选，规模大概怎样？`,
+      intent: "resume_dig_why_scale",
+      followUpHints: ["取舍", "规模", ...(secondary.highlights || [])],
       rubrics: [
-        { dimension: "ownership", weight: 0.5, good: "边界清晰", poor: "全程我们" },
-        { dimension: "collaboration", weight: 0.5, good: "有协作动作", poor: "空话" },
+        { dimension: "tradeoff", weight: 0.5, good: "讲清为何选", poor: "无取舍" },
+        { dimension: "depth", weight: 0.5, good: "有规模与约束", poor: "空谈" },
+      ],
+      referencePoints: [],
+      fromResume: true,
+    });
+    digs.push({
+      id: "biz_dig_secondary_own",
+      roleId: "rd_general",
+      trackId: "biz",
+      phase: "resume_deep_dive",
+      prompt: `「${secondary.name}」里你个人真正负责哪一块？有没有失败方案，你怎么收的？`,
+      intent: "resume_dig_ownership",
+      followUpHints: ["职责", "失败", ...(secondary.highlights || [])],
+      rubrics: [
+        { dimension: "ownership", weight: 0.5, good: "落到个人动作", poor: "全程我们" },
+        { dimension: "pitfall", weight: 0.5, good: "有失败与复盘", poor: "只谈成功" },
       ],
       referencePoints: [],
       fromResume: true,
     });
   } else if (resume?.experiences?.[0]) {
     const e = resume.experiences[0];
-    deepDive.push({
-      id: "biz_deep_exp",
+    digs.push({
+      id: "biz_dig_exp_why",
       roleId: "rd_general",
       trackId: "biz",
       phase: "resume_deep_dive",
-      prompt: `你在${e.org || "上一段经历"}担任${e.title || "相关角色"}时，印象最深的一次排查或取舍是什么？你具体做了什么？`,
-      intent: "resume_experience_depth",
-      followUpHints: ["职责边界", ...(e.highlights || [])],
+      prompt: `你在${e.org || "上一段经历"}担任${e.title || "相关角色"}时，最关键的一次技术或方案取舍是什么？为什么这么选？`,
+      intent: "resume_dig_why_scale",
+      followUpHints: ["取舍理由", ...(e.highlights || [])],
       rubrics: [
-        { dimension: "ownership", weight: 0.5, good: "落到个人动作", poor: "空泛描述" },
-        { dimension: "depth", weight: 0.5, good: "有过程与结果", poor: "只有结论" },
+        { dimension: "tradeoff", weight: 0.5, good: "讲清为何选", poor: "无取舍" },
+        { dimension: "depth", weight: 0.5, good: "有过程与约束", poor: "空谈" },
       ],
       referencePoints: [],
       fromResume: true,
     });
+    digs.push({
+      id: "biz_dig_exp_own",
+      roleId: "rd_general",
+      trackId: "biz",
+      phase: "resume_deep_dive",
+      prompt: `同一段经历里，哪件事是你独立闭环的？出过错吗，你怎么定位和收尾的？`,
+      intent: "resume_dig_ownership",
+      followUpHints: ["个人动作", "失败", ...(e.highlights || [])],
+      rubrics: [
+        { dimension: "ownership", weight: 0.5, good: "落到个人动作", poor: "空泛描述" },
+        { dimension: "pitfall", weight: 0.5, good: "有失败与复盘", poor: "只谈成功" },
+      ],
+      referencePoints: [],
+      fromResume: true,
+    });
+  } else {
+    // 无简历锚点：用题库里偏取舍/故障的深挖题，避开「介绍项目背景」类复述
+    digs.push({
+      ...RD_QUESTIONS[1]!,
+      id: "biz_dig_fallback_1",
+      phase: "resume_deep_dive",
+      fromResume: false,
+    });
+    digs.push({
+      ...RD_QUESTIONS[2]!,
+      id: "biz_dig_fallback_2",
+      phase: "resume_deep_dive",
+      fromResume: false,
+    });
   }
 
-  // 专业题：从题库挑后端/前端向小题，避开「用了什么框架」类事实题
-  const knowledgeBank = RD_QUESTIONS.filter(
-    (q) =>
-      !/用了什么|什么框架|什么技术栈/.test(q.prompt) &&
-      q.id !== "rd_q1",
-  )
-    .slice(0, 3)
-    .map((q, i) => ({
-      ...q,
-      id: `biz_knowledge_${i + 1}`,
-      phase: "professional_knowledge" as const,
-      fromResume: false,
-    }));
+  // Q3：一道专业/情景题；优先故障/推进/性能，避开与 Q1–Q2 重复的取舍题与事实复述题
+  const preferredKnowledgeIds = ["rd_q3", "rd_q6", "rd_q4", "rd_q5", "rd_q7"];
+  const knowledgeSeed =
+    preferredKnowledgeIds
+      .map((id) => RD_QUESTIONS.find((q) => q.id === id))
+      .find(Boolean) ||
+    RD_QUESTIONS.find(
+      (q) =>
+        q.id !== "rd_q1" &&
+        q.id !== "rd_q2" &&
+        !/用了什么|什么框架|什么技术栈|介绍一个你最有代表/.test(q.prompt),
+    ) ||
+    RD_QUESTIONS[5]!;
+  const knowledgeQ: Question = {
+    ...knowledgeSeed,
+    id: "biz_knowledge_1",
+    phase: "professional_knowledge",
+    fromResume: false,
+  };
 
   const codingProblem = pickCodingProblem((resume?.projects?.length || 0) + 1);
   const codingQ: Question = {
@@ -250,7 +284,7 @@ export function buildQuestionQueue(
     roleId: "rd_general",
     trackId: "biz",
     phase: "coding",
-    prompt: `编程环节：${codingProblem.title}。请在编辑器里手写实现并跑测。${codingProblem.prompt}`,
+    prompt: `编程环节：${codingProblem.title}。请在编辑器里手写实现并跑测（也可跳过）。${codingProblem.prompt}`,
     intent: "coding_exercise",
     followUpHints: [codingProblem.complexityHint || "复杂度"],
     rubrics: [
@@ -263,11 +297,11 @@ export function buildQuestionQueue(
     codingProblemId: codingProblem.id,
   };
 
-  // 保证编程环节不被 slice 裁掉
-  const ahead = [...research, ...deepDive, ...knowledgeBank].slice(
-    0,
-    Math.max(1, cfg.questionsPerSession - 1),
-  );
+  const target = Math.max(2, cfg.questionsPerSession);
+  // 保证编程始终是最后一题，且总数 ≈ questionsPerSession（默认 4）
+  const aheadBudget = Math.max(1, target - 1);
+  const digBudget = Math.min(2, Math.max(1, aheadBudget - 1));
+  const ahead = [...digs.slice(0, digBudget), knowledgeQ].slice(0, aheadBudget);
   return [...ahead, codingQ];
 }
 
