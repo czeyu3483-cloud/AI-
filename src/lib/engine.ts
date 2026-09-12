@@ -1,4 +1,12 @@
-import { INTEGRITY_END_UTTERANCE, PRESSURE_CONFIG, SKIP_SOFT_UTTERANCE } from "./config";
+import {
+  INTEGRITY_END_UTTERANCE,
+  POLICY_HR_DEFLECT,
+  POLICY_LEADER_DEFLECT,
+  POLICY_RAMBLING_NEXT,
+  POLICY_THINKING_WAIT,
+  PRESSURE_CONFIG,
+  SKIP_SOFT_UTTERANCE,
+} from "./config";
 import { matchReplyBank } from "./replyBank";
 import { RD_QUESTIONS } from "./questions/rd";
 import type {
@@ -65,6 +73,21 @@ function pressureOf(rt: QuestionRuntime) {
   return rt.followUpCount + rt.hintCount + rt.reframeCount;
 }
 
+function isShortThinkingRequest(text: string) {
+  // 短句要思考时间；长答里顺带「我想一下」不算纯等待
+  if (text.length > 40) return false;
+  return /我想一下|让我想一下|我想想|给我一点时间|给我点时间|重新组织一下|稍等一下|让我整理一下/.test(
+    text,
+  );
+}
+
+function detectRambling(text: string) {
+  const thenCount = (text.match(/然后/g) || []).length;
+  const filler =
+    /总而言之|综上所述|简单来说就是|反正就是|然后又然后|这个那个|就是说就是说/.test(text);
+  return text.length > 450 || thenCount >= 6 || (text.length > 280 && (thenCount >= 4 || filler));
+}
+
 export function detectSignals(answer: string, silenceStuck?: boolean): TurnSignals {
   const text = answer.trim();
   const signals: TurnSignals = {};
@@ -76,22 +99,46 @@ export function detectSignals(answer: string, silenceStuck?: boolean): TurnSigna
   if (/紧张|有点乱|组织不好/.test(text)) signals.stuckSubtype = "nervous";
   if (/提示|告诉我答案|标准答案|直接说答案/.test(text)) signals.askedForHint = true;
   if (/跳过|下一题|不会做了|放弃/.test(text)) signals.explicitGiveUp = true;
-  // 主动承认简历/项目造假、乱写
+
+  // 主动承认简历/项目造假、乱写、挂名
   if (
-    /乱写|瞎写|编的|编造|杜撰|假的|造假|注水|简历.*(乱|假|编)|项目.*(乱写|假的|编的)|经历.*(乱写|假的)/.test(
+    /乱写|瞎写|编的|编造|杜撰|假的|造假|注水|假经历|挂名|简历.*(乱|假|编)|项目.*(乱写|假的|编的)|经历.*(乱写|假的|编)/.test(
       text,
     )
   ) {
     signals.integrityBreach = true;
   }
-  if (/薪资|多少钱|HC|加班|转正/.test(text)) {
-    signals.metaQuestionType = /薪资|多少钱/.test(text) ? "salary" : "process";
+
+  if (isShortThinkingRequest(text)) {
+    signals.needsTimeToThink = true;
   }
-  if (/你觉得我|我能过吗|面得怎么样/.test(text)) signals.metaQuestionType = "challenge_interviewer";
+
+  // 跑题/元问题：薪资加班等 → HR；过不过/录用/内部政策/改约八卦 → 领导/面试环节
+  if (/薪资|工资|多少钱|HC|加班|调休|福利|五险|年终奖|发多少|什么待遇/.test(text)) {
+    signals.metaQuestionType = "salary";
+  } else if (
+    /你觉得我|我能过吗|能不能过|面得怎么样|有机会吗|录用|offer|过不过|能过吗|通过概率|内部政策|编制|名额/.test(
+      text,
+    )
+  ) {
+    signals.metaQuestionType = "challenge_interviewer";
+  } else if (
+    /改约|改时间|下次再面|你们组.*怎么样|领导.*怎么样|面试官你几级|什么时候出结果|多久能知道|团队栈.*听说|八卦/.test(
+      text,
+    )
+  ) {
+    signals.metaQuestionType = "process";
+  }
+
   const weCount = (text.match(/我们/g) || []).length;
   const iCount = (text.match(/我(?!们)/g) || []).length;
   if (text.length > 80 && weCount >= 3 && iCount <= 1) signals.scriptedAnswerSuspicion = true;
+
   if (text.length > 450) signals.tooLong = "timeout";
+  if (detectRambling(text)) {
+    signals.rambling = true;
+    if (!signals.tooLong) signals.tooLong = "timeout";
+  }
   return signals;
 }
 
@@ -160,7 +207,9 @@ export function decideTurn(input: {
   const pendingTags: AbilityTag[] = [];
   if (input.answer.trim()) rt.userAnswers.push(input.answer.trim());
 
-  // 固定反应库优先：命中则原样回复（生产仅 1–30；诚信类可直接结束）
+  // —— 全局政策优先（先于重追问）——
+
+  // 1) 固定反应库：命中则原样回复（生产仅 1–30；诚信类可直接结束）
   const bankHit = matchReplyBank(input.answer, { hintCount: rt.hintCount });
   if (bankHit) {
     signals.replyBankId = bankHit.id;
@@ -182,6 +231,21 @@ export function decideTurn(input: {
         signals,
         pendingTags,
         done: true,
+        verbatim: true,
+      };
+    }
+
+    if (bankHit.flags.wait || signals.needsTimeToThink) {
+      signals.needsTimeToThink = true;
+      return {
+        action: bankHit.action || "CONTINUE_LISTEN",
+        utterance: bankHit.reply || POLICY_THINKING_WAIT,
+        questionId: rt.question.id,
+        followUpCount: rt.followUpCount,
+        hintCount: rt.hintCount,
+        reframeCount: rt.reframeCount,
+        signals,
+        pendingTags: pendingTags.length ? pendingTags : undefined,
         verbatim: true,
       };
     }
@@ -233,7 +297,7 @@ export function decideTurn(input: {
     };
   }
 
-  // 简历/经历不实：真人面试官会直接结束，而不是继续控场套话
+  // 2) 弄虚作假：改简历再来 + 结束
   if (signals.integrityBreach) {
     pendingTags.push("role_mismatch_suspected");
     if (pendingTags.length) rt.tags = Array.from(new Set([...rt.tags, ...pendingTags]));
@@ -251,19 +315,40 @@ export function decideTurn(input: {
     };
   }
 
-  if (signals.metaQuestionType) {
+  // 3) 要思考时间：只回「好的。」，等待，不换题
+  if (signals.needsTimeToThink) {
     return {
-      action: "FORMULA_DEFLECT",
-      utterance:
-        signals.metaQuestionType === "salary"
-          ? "薪资这块一般是 HR 那边聊，咱们先把技术问题过完。"
-          : "录用结论这边不好当场说，咱们继续把当前问题聊清楚。",
+      action: "CONTINUE_LISTEN",
+      utterance: POLICY_THINKING_WAIT,
       questionId: rt.question.id,
       followUpCount: rt.followUpCount,
       hintCount: rt.hintCount,
       reframeCount: rt.reframeCount,
       signals,
+      verbatim: true,
     };
+  }
+
+  // 4) 跑题/元问题：HR 或 领导/面试环节不好说
+  if (signals.metaQuestionType) {
+    return {
+      action: "FORMULA_DEFLECT",
+      utterance:
+        signals.metaQuestionType === "salary" ? POLICY_HR_DEFLECT : POLICY_LEADER_DEFLECT,
+      questionId: rt.question.id,
+      followUpCount: rt.followUpCount,
+      hintCount: rt.hintCount,
+      reframeCount: rt.reframeCount,
+      signals,
+      verbatim: true,
+    };
+  }
+
+  // 5) 答太长 / 跑火车：软换下一题
+  if (signals.tooLong === "timeout" || signals.rambling) {
+    const decision = advance(session, "SKIP_SOFT", POLICY_RAMBLING_NEXT, signals, pendingTags);
+    decision.verbatim = true;
+    return decision;
   }
 
   if (signals.askedForHint) {
@@ -321,18 +406,6 @@ export function decideTurn(input: {
       reframeCount: rt.reframeCount,
       signals,
       pendingTags,
-    };
-  }
-
-  if (signals.tooLong === "timeout") {
-    return {
-      action: "TIMEBOX",
-      utterance: "你讲得比较完整，我先记一下。时间关系，这个点我们先收到这里。",
-      questionId: rt.question.id,
-      followUpCount: rt.followUpCount,
-      hintCount: rt.hintCount,
-      reframeCount: rt.reframeCount,
-      signals,
     };
   }
 

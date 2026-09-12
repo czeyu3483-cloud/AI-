@@ -5,6 +5,13 @@ import type { AbilityTag, InterviewAction } from "./types";
  *
  * 生产库目前仅收录 id 1–30（用户已确认的回复）。
  * TODO: 待用户提供面试官回复后，再补全 id 31–100；切勿提前硬编码 31–100。
+ *
+ * 全局控场口径（与 engine 一致）：
+ * - 要思考时间 →「好的。」（wait，不换题）
+ * - 薪资/HR →「这块后面 HR 会聊。」
+ * - 过不过/录用/内部政策 →「这个面试环节不好说，我们先回到题目。」
+ * - 弄虚作假 → 改简历再来 + endInterview
+ * - 答太长 →「那我们先看下一个问题。」（engine softSkip）
  */
 
 export type ReplyBankFlags = {
@@ -12,8 +19,10 @@ export type ReplyBankFlags = {
   endInterview?: boolean;
   /** 仅第一次给轻提示；已提示过则本条不命中 */
   hintOnce?: boolean;
-  /** 收束本题并软换下一题（预留；1–30 暂未使用） */
+  /** 收束本题并软换下一题 */
   softSkip?: boolean;
+  /** 只应答、继续听，不追问、不换题 */
+  wait?: boolean;
 };
 
 export type ReplyBankEntry = {
@@ -23,6 +32,8 @@ export type ReplyBankEntry = {
   flags?: ReplyBankFlags;
   tags?: AbilityTag[];
   action?: InterviewAction;
+  /** 超过该长度不命中（用于「我想一下」等短句控场） */
+  maxLen?: number;
 };
 
 export type ReplyBankMatch = {
@@ -41,16 +52,16 @@ export const REPLY_BANK: ReplyBankEntry[] = [
   // —— 诚信红线 → endInterview ——
   {
     id: 5,
-    patterns: [/简历是乱写的/, /简历.*乱写/, /简历.*瞎写/],
-    reply: "好的，那你先把简历改扎实了再来面试，今天就先到这里。",
+    patterns: [/简历是乱写的/, /简历.*乱写/, /简历.*瞎写/, /简历.*造假/, /简历.*注水/],
+    reply: "那你先把简历改扎实了再来面试，今天就先到这里。",
     flags: { endInterview: true },
     tags: ["role_mismatch_suspected"],
     action: "FINISH",
   },
   {
     id: 6,
-    patterns: [/项目经历有一部分是编的/, /项目.*是编的/, /经历.*是编的/, /有一部分是编的/],
-    reply: "好的，那你先把项目经历写扎实了再来面试，今天就先到这里。",
+    patterns: [/项目经历有一部分是编的/, /项目.*是编的/, /经历.*是编的/, /有一部分是编的/, /项目.*编造/, /假经历/],
+    reply: "那你先把简历改扎实了再来面试，今天就先到这里。",
     flags: { endInterview: true },
     tags: ["role_mismatch_suspected"],
     action: "FINISH",
@@ -58,7 +69,7 @@ export const REPLY_BANK: ReplyBankEntry[] = [
   {
     id: 7,
     patterns: [/这个项目其实不是我做的/, /项目其实不是我做的/, /其实不是我做的/],
-    reply: "好的，那你先把真实负责的项目整理清楚再来面试，今天就先到这里。",
+    reply: "那你先把简历改扎实了再来面试，今天就先到这里。",
     flags: { endInterview: true },
     tags: ["role_mismatch_suspected"],
     action: "FINISH",
@@ -66,7 +77,7 @@ export const REPLY_BANK: ReplyBankEntry[] = [
   {
     id: 8,
     patterns: [/只是挂名/, /我只是挂名/, /主要是别人做的.*挂名/, /挂名/],
-    reply: "好的，那你先把个人贡献写清楚再来面试，今天就先到这里。",
+    reply: "那你先把简历改扎实了再来面试，今天就先到这里。",
     flags: { endInterview: true },
     tags: ["role_mismatch_suspected"],
     action: "FINISH",
@@ -101,12 +112,24 @@ export const REPLY_BANK: ReplyBankEntry[] = [
     action: "FORMULA_DEFLECT",
   },
 
-  // —— 卡壳 / 不会（追问规划，不换题）——
+  // —— 要思考时间：只回「好的。」，等待，不挖、不换题 ——
   {
     id: 1,
-    patterns: [/我想一下/, /嗯+[…\.．。]*我想一下/, /让我想一下/, /我想想/],
-    reply: "嗯，你想一下可以，也可以说说你第一反应是什么。",
-    action: "FORMULA_DEFLECT",
+    patterns: [
+      /我想一下/,
+      /嗯+[…\.．。]*我想一下/,
+      /让我想一下/,
+      /我想想/,
+      /给我一点时间/,
+      /给我点时间/,
+      /重新组织一下/,
+      /我重新组织一下/,
+      /稍等一下.*想/,
+    ],
+    reply: "好的。",
+    flags: { wait: true },
+    action: "CONTINUE_LISTEN",
+    maxLen: 40,
   },
   {
     id: 2,
@@ -264,6 +287,7 @@ export function matchReplyBank(
 
   for (const entry of REPLY_BANK) {
     if (entry.flags?.hintOnce && (ctx.hintCount ?? 0) >= 1) continue;
+    if (entry.maxLen != null && text.length > entry.maxLen) continue;
     if (entry.patterns.some((re) => re.test(text))) {
       return {
         id: entry.id,

@@ -22,6 +22,7 @@ export type InterviewAction =
   | "TIMEBOX"
   | "SKIP_SOFT"
   | "FORMULA_DEFLECT"
+  | "CONTINUE_LISTEN"
   | "FINISH";
 
 export type ResumeProfile = {
@@ -73,9 +74,14 @@ export type BehaviorConfig = {
 
 export type TurnSignals = {
   tooLong?: "timeout";
+  /** 答太长且重复啰嗦（与 tooLong 可同时出现） */
+  rambling?: boolean;
+  /** 候选人明确要思考时间：只回「好的」，不换题 */
+  needsTimeToThink?: boolean;
   stuckSubtype?: "not_learned" | "cannot_solve" | "nervous";
   scriptedAnswerSuspicion?: boolean;
   answerRequestCount?: number;
+  /** salary/hr → HR 挡回；process/challenge → 领导/面试环节不好说 */
   metaQuestionType?: "salary" | "process" | "challenge_interviewer";
   askedForHint?: boolean;
   explicitGiveUp?: boolean;

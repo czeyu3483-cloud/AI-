@@ -36,14 +36,19 @@ export async function POST(req: Request) {
     });
 
     const q = session.queue[Math.min(session.currentIndex, session.queue.length - 1)]!;
-    // replyBank / 诚信结束：保留原句口吻，不做润色改写
+    // replyBank / 全局控场原句 / 诚信结束：保留口吻，不做润色改写
     const polished = await polishUtterance({
       action: decision.action,
       draft: decision.utterance,
       questionPrompt: q.prompt,
       userAnswer: body.answer,
       tone: session.config.tone,
-      skipPolish: Boolean(decision.verbatim || decision.signals.integrityBreach),
+      skipPolish: Boolean(
+        decision.verbatim ||
+          decision.signals.integrityBreach ||
+          decision.signals.needsTimeToThink ||
+          decision.signals.replyBankId != null,
+      ),
       bankStyle:
         decision.signals.replyBankId != null
           ? `replyBank#${decision.signals.replyBankId}`

@@ -35,7 +35,19 @@ export const SKIP_SOFT_UTTERANCE = "好，这题我先记下了，我们换一�
 
 /** 简历/经历明显不实或主动承认乱写时，直接结束 */
 export const INTEGRITY_END_UTTERANCE =
-  "那你先把简历完善扎实了再来面试吧，今天就先到这里。";
+  "那你先把简历改扎实了再来面试，今天就先到这里。";
+
+/** 全局控场：薪资/加班等 HR 话题 */
+export const POLICY_HR_DEFLECT = "这块后面 HR 会聊。";
+
+/** 全局控场：过不过/录用/内部政策等，面试环节不好说 */
+export const POLICY_LEADER_DEFLECT = "这个面试环节不好说，我们先回到题目。";
+
+/** 全局控场：候选人要思考时间 → 只应答、不追问、不换题 */
+export const POLICY_THINKING_WAIT = "好的。";
+
+/** 全局控场：答太长/跑火车 → 软换下一题 */
+export const POLICY_RAMBLING_NEXT = "那我们先看下一个问题。";
 
 /** @deprecated 开场白改为 persona.buildOpeningLine，保留常量以免旧引用报错 */
 export const INTRO_PRESSURE = "";
