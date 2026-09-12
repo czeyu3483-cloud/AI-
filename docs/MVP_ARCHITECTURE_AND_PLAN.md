@@ -1,21 +1,22 @@
 # 仿真 AI 模拟面试官 · MVP 架构与可执行开发方案
 
 > 范围约束：只覆盖 In Scope。账号体系、表情情绪、数据看板、付费等仍不做。  
-> **范围修订**：简历输入（文本/Word/PDF）与面试结束 **PDF 报告下载** 已纳入 MVP（务实版，非 ATS/非精美长画册）——详见 [`RESUME_AND_PDF_REPORT.md`](./RESUME_AND_PDF_REPORT.md)。
+> **范围修订**：简历输入（文本/Word/PDF）与面试结束 **PDF 报告下载** 已纳入 MVP——详见 [`RESUME_AND_PDF_REPORT.md`](./RESUME_AND_PDF_REPORT.md)。  
+> **Demo 收敛**：岗位仅 **研发岗**；开场增加面试风格 **压力 / 平和 / 随机**——详见 [`DEMO_ROLE_AND_STYLE.md`](./DEMO_ROLE_AND_STYLE.md)。
 
 ---
 
 ## 1. 产品一句话与成功标准
 
-**产品**：浏览器内可用的仿真面试官——支持简历输入定制、数字人视频形象 + 双向实时语音，按岗位题库与可配置状态机完成「出题 → 作答 → 有限追问/引导 → 复盘反馈 + PDF 报告」。
+**产品**：浏览器内可用的仿真面试官——研发岗 Demo，支持简历输入、压力/平和/随机风格、数字人视频 + 双向实时语音，按题库与可配置状态机完成「出题 → 作答 → 有限追问/引导 → 复盘反馈 + PDF 报告」。
 
 **MVP 成功标准（缺一不可）**
 
-1. 用户选岗位，并输入简历（粘贴文本 / 上传 txt、docx、pdf）后开面（无需登录）
-2. 面试官以视频数字人 + TTS 语音提问；至少部分题目锚定简历项目
+1. 用户确认研发岗，选择面试风格（压力/平和/随机），并输入简历（粘贴文本 / 上传 txt、docx、pdf）后开面（无需登录）
+2. 面试官以视频数字人 + TTS 语音提问；至少部分题目锚定简历项目；风格参数真实影响留白/追问/提示
 3. 用户麦克风作答（ASR → 文本）
 4. 状态机按规则处理：正常答 / 思考中 / 卡壳，并决定追问、温和提示或下一题
-5. 结束后输出结构化复盘，并可下载 PDF 报告；全程有基础日志
+5. 结束后输出结构化复盘，并可下载 PDF 报告（含本场风格）；全程有基础日志
 
 **相对通用 ChatGPT 的硬差异（开发不可绕过）**
 
@@ -138,8 +139,14 @@ type InterviewBehaviorConfig = {
   shortenProbeIfMismatch: boolean;
   singleQuestionOnly: true;
   followUpStyles: Array<"tradeoff" | "boundary" | "pitfall" | "ownership">;
+  // 风格（开场选择后写入 session）
+  styleChosen: "pressure" | "calm" | "random";
+  styleResolved: "pressure" | "calm";
+  tone: "steady_warm" | "steady_firm";
 };
 ```
+
+风格预设见 `config/styles/calm.json`、`config/styles/pressure.json`（[`DEMO_ROLE_AND_STYLE.md`](./DEMO_ROLE_AND_STYLE.md)）。`random` 仅在 `start` 时解析一次并落库。
 
 默认值写进 `config/interview-behavior.json`，UI 可提供简易调试面板（面试页隐藏入口或 `/debug`），方便调参。
 
@@ -215,7 +222,7 @@ type Role = {
 };
 ```
 
-MVP 先做 **2 个岗位 × 每岗 5–8 题**（人工写好），够演示与练习；后台扩充 = 改 JSON / 简单管理页（管理页可极简，甚至先手改文件）。
+MVP 先做 **1 个研发岗 × 5–8 题**（人工写好）+ 简历项目深挖 1–2 题；扩充岗位放到二期。
 
 ### 5.2 会话日志
 
@@ -268,9 +275,9 @@ type FeedbackReport = {
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
-| `GET` | `/api/roles` | 岗位列表 |
+| `GET` | `/api/roles` | 返回研发岗（Demo 单元素列表） |
 | `POST` | `/api/resume/parse` | 粘贴文本或上传 txt/docx/pdf → `ResumeProfile` |
-| `POST` | `/api/interview/start` | 创建 session（含可选简历）→ 开场稿 + 组卷后第一题 + config |
+| `POST` | `/api/interview/start` | body含 `style` + 可选简历 → 解析风格、组卷、开场 + 第一题 |
 | `POST` | `/api/interview/turn` | 上报 ASR 文本与当前题上下文 → 返回 decision + 话术 |
 | `POST` | `/api/interview/silence` | 上报沉默超时事件 → 返回 nudge / skip |
 | `POST` | `/api/interview/finish` | 生成结构化反馈 JSON |
@@ -286,17 +293,18 @@ ASR：MVP 默认浏览器端完成，文本经 `turn` 上传；若切云 ASR，�
 
 ## 7. 前端页面（只做必要页）
 
-1. **首页 / 选岗**：岗位卡片
-2. **简历页（或同页第二步）**：粘贴文本 / 上传 txt·docx·pdf → 解析预览（可编辑）→「开始面试」；提示使用脱敏数据
+1. **首页**：确认研发岗 + **选择风格（压力 / 平和 / 随机，默认平和）**
+2. **简历页（或同页下一步）**：粘贴文本 / 上传 txt·docx·pdf → 解析预览（可编辑）→「开始面试」；提示使用脱敏数据
 3. **面试页（主界面）**
+   - 弱展示本场实际风格
    - 左侧/全幅：数字人视频区
    - 下方或侧栏：字幕（面试官话术 + 用户 ASR 实时文本）
    - 状态指示：倾听中 / 请作答 / 思考中（弱提示，不打扰）
    - 控制：静音、结束面试（无登录）
-4. **复盘页**：结构化反馈；**下载 PDF 报告**；可「再面一场」
+4. **复盘页**：结构化反馈（含风格）；**下载 PDF 报告**；可「再面一场」
 5. **（可选）调试页**：行为参数滑杆
 
-不做：仪表盘、历史列表、账号墙、复杂设置中心、ATS 级简历诊断站。
+不做：多岗位选择器、仪表盘、历史列表、账号墙、复杂设置中心、ATS 级简历诊断站。
 
 ---
 
@@ -305,14 +313,14 @@ ASR：MVP 默认浏览器端完成，文本经 `turn` 上传；若切云 ASR，�
 ### Phase A · 骨架与知识底座（先于花活）
 
 1. Next.js 脚手架、基础布局、环境变量模板
-2. 写入 2 岗位题库 JSON + 评分维度（人工校验）
-3. 实现 Rule Engine 纯函数 + 单元测试（状态迁移、追问计数、停顿阈值、**控场动作与红线词**）
-4. 固化话术模板库：`TIMEBOX` / `REDIRECT` / `SKIP_SOFT` / `FORMULA_DEFLECT` 等
-5. **简历解析**：paste/txt/docx/pdf → `ResumeProfile` 预览编辑；`start` 组卷含 1–2 道项目深挖题
+2. 写入 **研发岗** 题库 JSON + 评分维度（人工校验）；`config/styles/{calm,pressure}.json`
+3. 实现 Rule Engine 纯函数 + 单元测试（状态迁移、追问计数、停顿阈值、**控场动作与红线词**、**风格参数分支**）
+4. 固化话术模板库：`TIMEBOX` / `REDIRECT` / `SKIP_SOFT` / `FORMULA_DEFLECT` 等（可按 tone 分两套中性措辞）
+5. **简历解析**：paste/txt/docx/pdf → `ResumeProfile` 预览编辑；`start` 接收 style 并组卷含 1–2 道项目深挖题
 6. `start / turn / silence / finish` API 打通（TTS/数字人先返回纯文本）
-7. 反馈强制输出 AbilityTag（可培养 / 没学过 / 紧张 等）
+7. 反馈强制输出 AbilityTag（可培养 / 没学过 / 紧张 等）+ 本场风格
 
-**阶段出口**：纯文字模式下完整跑通「选岗 → 简历输入 → 一次一问（含简历锚定题）→ 取舍/边界追问 → 卡壳提示后换题 → 长答收束/跑题拉回 → 结构化标签反馈 + 日志」
+**阶段出口**：纯文字模式下完整跑通「研发岗 → 选风格 → 简历 → 一次一问（含简历锚定题）→ 风格差异可感知 → 结构化标签反馈 + 日志」
 
 ### Phase B · 语音双向
 
@@ -363,11 +371,13 @@ ASR：MVP 默认浏览器端完成，文本经 `turn` 上传；若切云 ASR，�
   speech/                   # tts client helpers
   logging/
 /content
-  roles/*.json
-  questions/*.json
+  roles/rd_general.json
+  questions/rd_general.json
   samples/desensitized-resume.txt
 /config
   interview-behavior.json
+  styles/calm.json
+  styles/pressure.json
 ```
 
 ---
@@ -384,6 +394,7 @@ ASR：MVP 默认浏览器端完成，文本经 `turn` 上传；若切云 ASR，�
 | 双栏 PDF 抽乱 / 扫描件 | 预览确认 + 回退粘贴；OCR 明确不做 |
 | PDF 中文与包体 | 嵌入子集字体；报告篇幅控制在数页内 |
 | 简历隐私 | 脱敏提示；仅 session 级保存；不建账号云盘 |
+| 压力风格变味成冒犯 | 红线词表 + 禁止嘲讽；压力只调参数与追问密度 |
 
 ---
 
@@ -394,27 +405,28 @@ ASR：MVP 默认浏览器端完成，文本经 `turn` 上传；若切云 ASR，�
 - 扫描件 OCR
 - 表情/眼神/情绪
 - 多人面试、可视化大数据看板、付费
-- 压力面/温和面风格切换（可把 `style` 留字段，UI 不做）
-- 海量岗位；MVP 2 岗即可
+- **多岗位**（产品/运营/算法分岗等）；Demo 仅研发岗
 - 「精美长画册式」报告（要的是简洁可下载专业复盘 PDF）
 
 ---
 
 ## 12. 验收清单（开发完成自检）
 
-- [ ] 选岗 → 简历（文本/txt/docx/pdf）→ 开面，无登录
+- [ ] 仅研发岗可开面；可选压力 / 平和 / 随机（随机写入实际风格）
+- [ ] 研发岗 → 风格 → 简历（文本/txt/docx/pdf）→ 开面，无登录
 - [ ] 解析可预览编辑；失败可回退粘贴；提示脱敏
 - [ ] 至少 1 题锚定简历项目；追问能点名项目/技术栈
+- [ ] 压力 vs 平和：沉默阈值/提示次数/追问倾向有可观察差异
 - [ ] 数字人视频态 + TTS 提问可感知
 - [ ] 麦克风作答进入流程
 - [ ] 沉默未超阈值不被打断；超阈值触发提示或下一题
 - [ ] 追问次数有上限，达上限进下一题
 - [ ] **一次只问一个问题**；追问聚焦取舍/边界/坑/ownership
 - [ ] 长答可收束、跑题可拉回；无「你停一下」
-- [ ] 卡壳有翻身/方向提示，不连续死磕；要答案有次数限制
+- [ ] 卡壳有翻身/方向提示（平和）或不死磕换题（压力）；要答案有次数限制
 - [ ] 反问控场/薪资等公式化挡回；全程不当场宣判
-- [ ] 复盘区分可培养 / 没学过 / 紧张等标签
-- [ ] 结束有结构化复盘，**可下载 PDF 报告**（无通过/不通过）
+- [ ] 复盘区分可培养 / 没学过 / 紧张等标签；标明风格
+- [ ] 结束有结构化复盘，**可下载 PDF 报告**（含风格，无通过/不通过）
 - [ ] 本场日志可查（题目/回答/状态决策）
 - [ ] 停顿阈值、追问深度可配置
 - [ ] 题库内容可打开人工校验（非纯模型生成题）
@@ -423,17 +435,20 @@ ASR：MVP 默认浏览器端完成，文本经 `turn` 上传；若切云 ASR，�
 
 ## 13. 推荐默认参数（可开箱演示）
 
+平和 / 压力两套见 [`DEMO_ROLE_AND_STYLE.md`](./DEMO_ROLE_AND_STYLE.md)。未选风格时默认 **平和**：
+
 ```json
 {
-  "silenceThinkingMs": 2500,
-  "silenceStuckMs": 8000,
+  "silenceThinkingMs": 3000,
+  "silenceStuckMs": 10000,
   "maxFollowUpsPerQuestion": 2,
   "minAnswerChars": 30,
   "questionsPerSession": 4,
-  "nudgeBeforeSkip": true
+  "nudgeBeforeSkip": true,
+  "styleResolved": "calm"
 }
 ```
 
 ---
 
-**方案结论**：以 **「知识库 + 同构面试状态机」为中枢**，简历解析与 PDF 报告为闭环两端增强；LLM/TTS/ASR/数字人皆为受控外设。开发顺序：**文字闭环（含简历组卷）→ 语音 → 数字人 → PDF 报告与交付**，避免一上来陷进数字人与排版而闭环未通。
+**方案结论**：以 **「知识库 + 同构面试状态机」为中枢**，Demo 钉死 **研发岗**；风格用 **参数预设** 切换压力/平和（随机=开场解析）；简历解析与 PDF 报告为闭环两端。开发顺序：**文字闭环（含风格+简历组卷）→ 语音 → 数字人 → PDF 报告与交付**。
