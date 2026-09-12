@@ -35,6 +35,13 @@ function normalizeEntity(s: string): string {
     .toLowerCase();
 }
 
+/** 去掉职位/专业常见尾巴，便于「前端开发实习」≈「前端实习」 */
+function coreEntity(s: string): string {
+  return normalizeEntity(s)
+    .replace(/(实习|工程师|开发者|开发|岗|生|员|专业|方向|本科|硕士|研究生)+/g, "")
+    .replace(/开发/g, "");
+}
+
 function entitiesOverlap(a: string, b: string): boolean {
   const na = normalizeEntity(a);
   const nb = normalizeEntity(b);
@@ -42,6 +49,11 @@ function entitiesOverlap(a: string, b: string): boolean {
   if (na === nb) return true;
   if (na.length >= 2 && nb.length >= 2 && (na.includes(nb) || nb.includes(na))) {
     return true;
+  }
+  const ca = coreEntity(a);
+  const cb = coreEntity(b);
+  if (ca.length >= 2 && cb.length >= 2) {
+    if (ca === cb || ca.includes(cb) || cb.includes(ca)) return true;
   }
   return false;
 }
