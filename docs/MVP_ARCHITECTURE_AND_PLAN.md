@@ -34,7 +34,7 @@
 | Web | Next.js (App Router) + TypeScript + Tailwind | 单仓前后端、部署快（Vercel 等） |
 | UI 原语 | shadcn/ui | 表单/按钮/对话框够用，不花时间造轮子 |
 | 会话状态 | 前端状态机（XState 或自研有限状态机）+ 服务端校验同一套规则参数 | 「交互规则」是业务核心，必须显式建模 |
-| LLM | 任一稳定 Chat API（Claude / GPT / 国产均可） | 只负责：在规则约束下生成追问话术、评分与反馈文案 |
+| LLM | **DeepSeek**（OpenAI 兼容：`https://api.deepseek.com`，默认 `deepseek-flash`） | 只负责：在规则约束下生成追问话术、评分与反馈文案；无 Key 走 mock。详见 `.cursor/skills/deepseek-llm/SKILL.md` |
 | ASR | 浏览器优先 Web Speech API；预留云 ASR（如 Whisper/阿里/腾讯）降级开关 | MVP 先跑通；云 ASR 作质量升级 |
 | TTS | 流式 TTS API（OpenAI / Azure / 火山等） | 面试官说话；与数字人口型尽量对齐 |
 | 数字人 | **MVP 推荐路径 A（见下）** | 控制成本与工期，避免数字人拖垮闭环 |
