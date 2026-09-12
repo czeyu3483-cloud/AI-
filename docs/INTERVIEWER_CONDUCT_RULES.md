@@ -3,7 +3,7 @@
 > 来源：真实面试官提问/控场/边界准则。  
 > 原则：**写成规则引擎动作 + 固定话术模板 + 评估标签**，不全靠自由 Prompt。  
 > 本文只定义 MVP 必须编码的行为；表情微动作等 Out of Scope 项不实现。  
-> **风格**：压力/平和只改变参数与追问密度（见 [`DEMO_ROLE_AND_STYLE.md`](./DEMO_ROLE_AND_STYLE.md)），不改变本章红线。
+> **风格**：UI 可展示压力/平和/随机；Demo **仅压力面可选**，只改变参数与追问密度（见 [`DEMO_ROLE_AND_STYLE.md`](./DEMO_ROLE_AND_STYLE.md)），不改变本章红线。
 
 ---
 
