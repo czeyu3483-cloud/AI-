@@ -351,12 +351,20 @@ export function enrichDigsWithSelfIntro(session: InterviewSession) {
     ...(session.resume?.experiences || []).map((e) => e.org || "").filter(Boolean),
   ].filter(Boolean) as string[];
   const fromResume = resumeNames.find((n) => n && intro.includes(n));
+  // 仅抽取带实体后缀或「负责/参与」的片段，避免把「还是我」这类短词当 hook
   const clip =
     intro
       .replace(/\s+/g, "")
-      .match(/(?:在|于)?([\u4e00-\u9fff]{2,12}(?:公司|大学|学院)?|(?:负责|参与)[\u4e00-\u9fff]{2,10})/g) ||
-    [];
-  const hook = fromResume || clip[0]?.replace(/^(在|于)/, "") || null;
+      .match(
+        /(?:在|于)?([\u4e00-\u9fffA-Za-z0-9]{2,16}(?:公司|大学|学院|集团|科技))|(?:负责|参与)([\u4e00-\u9fffA-Za-z0-9]{2,12})/g,
+      ) || [];
+  const rawHook =
+    fromResume ||
+    clip
+      .map((c) => c.replace(/^(在|于|负责|参与)/, ""))
+      .find((h) => h.length >= 2 && !/还是|就是|然后|大家|你好|我是/.test(h)) ||
+    null;
+  const hook = rawHook;
   if (!hook || hook.length < 2) return;
   for (const rt of session.runtimes) {
     if (rt.question.phase !== "resume_deep_dive") continue;
