@@ -189,7 +189,7 @@ export default function HomePage() {
               onClick={() => void parseResume()}
               className="rounded-full border border-[var(--accent)] px-3 py-1.5 text-sm text-[var(--accent)]"
             >
-              解析简历
+              {busy ? "AI 总结中…" : "AI 总结简历"}
             </button>
           </div>
         </div>
@@ -206,18 +206,52 @@ export default function HomePage() {
           className="w-full rounded-xl border border-[var(--line)] bg-[#0d1524] p-4 text-sm leading-6 outline-none focus:border-[var(--accent)]"
         />
         {profile && (
-          <div className="mt-4 rounded-xl border border-[var(--line)] bg-[#0d1524] p-4 text-sm">
-            <p className="mb-2 text-[var(--accent)]">解析预览</p>
-            <p>姓名：{profile.name || "未识别"}</p>
-            <p>技能：{(profile.skills || []).join("、") || "未识别"}</p>
-            <ul className="mt-2 list-disc pl-5 text-[var(--muted)]">
-              {(profile.projects || []).map((p) => (
-                <li key={p.name}>
-                  {p.name}
-                  {p.role ? ` · ${p.role}` : ""}
-                </li>
-              ))}
-            </ul>
+          <div className="mt-4 space-y-3 rounded-xl border border-[var(--line)] bg-[#0d1524] p-4 text-sm">
+            <p className="text-[var(--accent)]">AI 简历总结</p>
+            {profile.parseMeta.warnings.length > 0 && (
+              <p className="text-xs text-[var(--accent-2)]">{profile.parseMeta.warnings.join(" · ")}</p>
+            )}
+            <p>
+              <span className="text-[var(--muted)]">姓名：</span>
+              {profile.name || "未识别"}
+            </p>
+            {profile.summary && (
+              <p className="leading-6 text-[var(--muted)]">
+                <span className="text-[var(--text)]">概述：</span>
+                {profile.summary}
+              </p>
+            )}
+            <p>
+              <span className="text-[var(--muted)]">技能：</span>
+              {(profile.skills || []).join("、") || "未识别"}
+            </p>
+            {(profile.experiences || []).length > 0 && (
+              <div>
+                <p className="mb-1 text-[var(--muted)]">过往经历</p>
+                <ul className="list-disc space-y-1 pl-5 text-[var(--muted)]">
+                  {profile.experiences.map((e, i) => (
+                    <li key={`${e.org || "exp"}-${i}`}>
+                      {[e.org, e.title, e.period].filter(Boolean).join(" · ") || "经历条目"}
+                      {e.highlights?.[0] ? ` — ${e.highlights[0]}` : ""}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {(profile.projects || []).length > 0 && (
+              <div>
+                <p className="mb-1 text-[var(--muted)]">项目</p>
+                <ul className="list-disc space-y-1 pl-5 text-[var(--muted)]">
+                  {profile.projects.map((p) => (
+                    <li key={p.name}>
+                      {p.name}
+                      {p.role ? ` · ${p.role}` : ""}
+                      {p.highlights?.[0] ? ` — ${p.highlights[0]}` : ""}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         )}
       </section>

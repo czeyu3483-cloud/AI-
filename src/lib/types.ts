@@ -27,8 +27,17 @@ export type InterviewAction =
 export type ResumeProfile = {
   rawText: string;
   name?: string;
+  /** AI 用自然语言总结的基本信息 */
+  summary?: string;
   education: Array<{ school?: string; degree?: string; major?: string }>;
   skills: string[];
+  /** 工作/实习等过往经历（由 AI 归纳，不依赖固定关键词） */
+  experiences: Array<{
+    org?: string;
+    title?: string;
+    period?: string;
+    highlights: string[];
+  }>;
   projects: Array<{ name: string; role?: string; stack?: string[]; highlights: string[] }>;
   parseMeta: { source: "paste" | "txt" | "docx" | "pdf"; warnings: string[] };
 };

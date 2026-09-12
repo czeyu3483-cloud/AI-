@@ -21,7 +21,16 @@ export async function POST(req: Request) {
     const styleId = body.styleId ?? "pressure";
     assertDemoSelection(roleId, styleId);
 
-    const queue = buildQuestionQueue(body.resume);
+    const resume = body.resume
+      ? {
+          ...body.resume,
+          experiences: body.resume.experiences ?? [],
+          skills: body.resume.skills ?? [],
+          projects: body.resume.projects ?? [],
+          education: body.resume.education ?? [],
+        }
+      : undefined;
+    const queue = buildQuestionQueue(resume);
     const runtimes = createRuntimes(queue);
     const draft = initialAskUtterance(queue[0]!);
     const polished = await polishUtterance({
@@ -35,7 +44,7 @@ export async function POST(req: Request) {
       id: newSessionId(),
       roleId,
       config: { ...PRESSURE_CONFIG },
-      resume: body.resume,
+      resume,
       queue,
       currentIndex: 0,
       runtimes,

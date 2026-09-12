@@ -19,9 +19,9 @@ export function assertDemoSelection(roleId: RoleId, styleId: StyleId) {
 }
 
 export function buildQuestionQueue(resume?: ResumeProfile): Question[] {
-  const resumeQs: Question[] = (resume?.projects || []).slice(0, 2).map((p, idx) => ({
+  const fromProjects: Question[] = (resume?.projects || []).slice(0, 2).map((p, idx) => ({
     id: `resume_proj_${idx + 1}`,
-    roleId: "rd_general",
+    roleId: "rd_general" as const,
     prompt: `看你简历里的「${p.name}」：你个人具体负责哪一块？当时最关键的技术取舍是什么？`,
     intent: "resume_ownership_tradeoff",
     followUpHints: ["个人贡献", "失败方案", "边界", ...(p.highlights || [])],
@@ -32,7 +32,20 @@ export function buildQuestionQueue(resume?: ResumeProfile): Question[] {
     referencePoints: p.stack || [],
     fromResume: true,
   }));
-  return [...resumeQs, ...RD_QUESTIONS].slice(0, PRESSURE_CONFIG.questionsPerSession);
+  const fromExp: Question[] = (resume?.experiences || []).slice(0, 1).map((e, idx) => ({
+    id: `resume_exp_${idx + 1}`,
+    roleId: "rd_general" as const,
+    prompt: `你在${e.org || "上一段经历"}担任${e.title || "相关角色"}时，印象最深的一次排查或取舍是什么？你具体做了什么？`,
+    intent: "resume_experience_depth",
+    followUpHints: ["职责边界", ...(e.highlights || [])],
+    rubrics: [
+      { dimension: "ownership", weight: 0.5, good: "落到个人动作", poor: "空泛描述" },
+      { dimension: "depth", weight: 0.5, good: "有过程与结果", poor: "只有结论" },
+    ],
+    referencePoints: [],
+    fromResume: true,
+  }));
+  return [...fromProjects, ...fromExp, ...RD_QUESTIONS].slice(0, PRESSURE_CONFIG.questionsPerSession);
 }
 
 export function createRuntimes(queue: Question[]): QuestionRuntime[] {

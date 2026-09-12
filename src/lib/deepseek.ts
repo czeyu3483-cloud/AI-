@@ -20,6 +20,30 @@ function modelName() {
   return process.env.DEEPSEEK_MODEL || "deepseek-flash";
 }
 
+/** deepseek-flash 默认会把 token 花在 reasoning，导致 content 为空；解析/话术都应关掉。 */
+function thinkingExtra() {
+  const mode = (process.env.DEEPSEEK_THINKING || "disabled").toLowerCase();
+  if (mode === "enabled" || mode === "on") return {};
+  return { thinking: { type: "disabled" as const } };
+}
+
+function extractJsonObject(raw: string): Record<string, unknown> {
+  const cleaned = raw
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+  try {
+    return JSON.parse(cleaned) as Record<string, unknown>;
+  } catch {
+    const start = cleaned.indexOf("{");
+    const end = cleaned.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      return JSON.parse(cleaned.slice(start, end + 1)) as Record<string, unknown>;
+    }
+    throw new Error("模型未返回可解析 JSON");
+  }
+}
+
 export function sanitizeUtterance(text: string, fallback: string) {
   let out = text.replace(/\s+/g, " ").trim();
   if (!out) return fallback;
@@ -63,6 +87,7 @@ export async function polishUtterance(input: {
           }),
         },
       ],
+      ...thinkingExtra(),
     });
     const raw = completion.choices[0]?.message?.content?.trim() || fallback;
     return { text: sanitizeUtterance(raw, fallback), mocked: false };
@@ -79,54 +104,81 @@ export async function structureResume(
     rawText: rawText.slice(0, 12000),
     education: [],
     skills: [],
+    experiences: [],
     projects: [],
     parseMeta: { source, warnings: [] },
   };
   const c = client();
   if (!c) {
-    base.parseMeta.warnings.push("未配置 DeepSeek，使用原文");
-    base.projects = rawText
-      .split(/\n/)
-      .map((l) => l.trim())
-      .filter((l) => /项目|系统|平台|App|服务/.test(l))
-      .slice(0, 2)
-      .map((name) => ({ name: name.slice(0, 40), highlights: [] as string[] }));
+    base.parseMeta.warnings.push("未配置 DeepSeek，无法做 AI 总结");
+    base.summary = rawText.slice(0, 180);
     return base;
   }
   try {
     const completion = await c.chat.completions.create({
       model: modelName(),
       temperature: 0.2,
-      max_tokens: 800,
+      max_tokens: 1400,
+      response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
           content:
-            '提取简历 JSON：{"name":string?,"education":[{"school","degree","major"}],"skills":string[],"projects":[{"name","role","stack":string[],"highlights":string[]}]}。不要 markdown。',
+            "你是资深技术面试助理。根据候选人简历用中文归纳基本信息，不要死磕关键词或固定章节标题；即使措辞随意也要推断姓名、背景、技能、工作/实习经历与项目。只输出 JSON，字段：name(string|null), summary(string，2-4句概述), education([{school,degree,major}]), skills(string[]), experiences([{org,title,period,highlights:string[]}]), projects([{name,role,stack:string[],highlights:string[]}])。不确定的字段用空字符串或空数组，不要编造。",
         },
-        { role: "user", content: rawText.slice(0, 10000) },
+        {
+          role: "user",
+          content: `以下是一位面试者的简历，请根据简历总结基本信息。\n\n${rawText.slice(0, 10000)}`,
+        },
       ],
+      ...thinkingExtra(),
     });
-    const raw = completion.choices[0]?.message?.content ?? "{}";
-    const json = JSON.parse(raw.replace(/^```json\n?|\n?```$/g, ""));
+    const msg = completion.choices[0]?.message as
+      | { content?: string | null; reasoning_content?: string | null }
+      | undefined;
+    const raw = (msg?.content || msg?.reasoning_content || "").trim();
+    if (!raw) throw new Error("模型返回空内容");
+    const json = extractJsonObject(raw);
+
+    const education = Array.isArray(json.education) ? json.education : [];
+    const skills = Array.isArray(json.skills)
+      ? (json.skills as unknown[]).map(String).filter(Boolean).slice(0, 24)
+      : [];
+    const experiences = Array.isArray(json.experiences)
+      ? (json.experiences as Array<Record<string, unknown>>).slice(0, 4).map((e) => ({
+          org: e.org ? String(e.org) : undefined,
+          title: e.title ? String(e.title) : undefined,
+          period: e.period ? String(e.period) : undefined,
+          highlights: Array.isArray(e.highlights)
+            ? (e.highlights as unknown[]).map(String).slice(0, 4)
+            : [],
+        }))
+      : [];
+    const projects = Array.isArray(json.projects)
+      ? (json.projects as Array<Record<string, unknown>>).slice(0, 4).map((p) => ({
+          name: String(p.name || "未命名项目"),
+          role: p.role ? String(p.role) : undefined,
+          stack: Array.isArray(p.stack) ? (p.stack as unknown[]).map(String) : [],
+          highlights: Array.isArray(p.highlights)
+            ? (p.highlights as unknown[]).map(String).slice(0, 5)
+            : [],
+        }))
+      : [];
+
     return {
       ...base,
-      name: json.name,
-      education: Array.isArray(json.education) ? json.education : [],
-      skills: Array.isArray(json.skills) ? json.skills.slice(0, 20) : [],
-      projects: Array.isArray(json.projects)
-        ? json.projects.slice(0, 3).map(
-            (p: { name?: string; role?: string; stack?: string[]; highlights?: string[] }) => ({
-              name: String(p.name || "未命名项目"),
-              role: p.role,
-              stack: p.stack ?? [],
-              highlights: p.highlights ?? [],
-            }),
-          )
-        : [],
+      name: json.name ? String(json.name) : undefined,
+      summary: json.summary ? String(json.summary) : undefined,
+      education: education as ResumeProfile["education"],
+      skills,
+      experiences,
+      projects,
     };
-  } catch {
-    base.parseMeta.warnings.push("结构化失败，已回退原文");
+  } catch (e) {
+    base.parseMeta.warnings.push(
+      e instanceof Error ? `AI 总结失败：${e.message}` : "AI 总结失败，已回退原文",
+    );
+    base.summary = rawText.slice(0, 180);
     return base;
   }
 }
@@ -159,6 +211,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
       model: modelName(),
       temperature: 0.3,
       max_tokens: 1200,
+      response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
@@ -181,9 +234,13 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
           }),
         },
       ],
+      ...thinkingExtra(),
     });
-    const raw = completion.choices[0]?.message?.content ?? "";
-    const json = JSON.parse(raw.replace(/^```json\n?|\n?```$/g, ""));
+    const msg = completion.choices[0]?.message as
+      | { content?: string | null; reasoning_content?: string | null }
+      | undefined;
+    const raw = (msg?.content || msg?.reasoning_content || "").trim();
+    const json = extractJsonObject(raw);
     return {
       overallSummary: String(json.overallSummary || fallback.overallSummary),
       perQuestion: Array.isArray(json.perQuestion) ? json.perQuestion : fallback.perQuestion,
