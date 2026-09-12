@@ -36,6 +36,8 @@ export async function POST(req: Request) {
     const resume = body.resume
       ? {
           ...body.resume,
+          // 结构化后仍保留完整原文，供冲突证据与复盘摘录
+          rawText: body.resume.rawText || "",
           experiences: body.resume.experiences ?? [],
           skills: body.resume.skills ?? [],
           projects: body.resume.projects ?? [],
@@ -95,6 +97,10 @@ export async function POST(req: Request) {
       interviewerName,
       sessionTags: [],
       authenticityChallengeCount: 0,
+      currentPhase: queue[0]?.phase || (trackId === "hr_final" ? "hr_fit" : "resume_research"),
+      resumeConflicts: [],
+      codingResults: [],
+      pendingConflictChallenge: null,
     };
     pushEvent(session, "start", {
       roleId,
@@ -121,6 +127,7 @@ export async function POST(req: Request) {
       candidateName: resume?.name || null,
       answerSoftLimitSec: limits.answerSoftLimitSec,
       answerHardLimitSec: limits.answerHardLimitSec,
+      phase: session.currentPhase,
     });
   } catch (e) {
     return NextResponse.json(

@@ -141,7 +141,7 @@ export const FABRICATION_PROBE_UTTERANCE =
 
 /** 口述与简历冲突（启发式挑战；可再经润色，但需保留两侧事实） */
 export const RESUME_CONFLICT_GENERIC_UTTERANCE =
-  "这个点和简历写法有点不一致，你解释一下。";
+  "简历写的是一边，你刚才说的是另一边，不太一样，解释一下。";
 
 /** 专业语气：尖锐但不嘲讽（润色 system 必含） */
 export const PROFESSIONAL_TONE_RULES =

@@ -2,7 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { CodingStep } from "@/components/CodingStep";
 import { DigitalHuman } from "@/components/DigitalHuman";
+import { getCodingProblem } from "@/lib/codingProblems";
+import { phaseLabel } from "@/lib/phases";
 import { BARGE_IN_LINE, shouldBargeIn } from "@/lib/persona";
 import {
   ensureMicPermission,
@@ -10,7 +13,13 @@ import {
   getSpeechRecognitionCtor,
   pickZhVoice,
 } from "@/lib/speech";
-import type { BehaviorConfig, FeedbackReport, Question } from "@/lib/types";
+import type {
+  BehaviorConfig,
+  CodingProblem,
+  FeedbackReport,
+  InterviewPhase,
+  Question,
+} from "@/lib/types";
 
 type BootState = {
   sessionId: string;
@@ -24,6 +33,8 @@ type BootState = {
   candidateName?: string;
   answerSoftLimitSec?: number;
   answerHardLimitSec?: number;
+  phase?: InterviewPhase;
+  codingProblem?: CodingProblem | null;
 };
 
 export default function InterviewPage() {
@@ -48,6 +59,10 @@ export default function InterviewPage() {
   const [interviewEnded, setInterviewEnded] = useState(false);
   const [answerRemainSec, setAnswerRemainSec] = useState<number | null>(null);
   const [answerSoftHit, setAnswerSoftHit] = useState(false);
+  const [phase, setPhase] = useState<InterviewPhase | null>(null);
+  const [codingProblem, setCodingProblem] = useState<CodingProblem | null>(null);
+  const [currentQuestion, setCurrentQuestion] = useState<Question | null>(null);
+
 
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -75,6 +90,23 @@ export default function InterviewPage() {
   );
 
   const progress = useMemo(() => `${Math.min(index + 1, total)} / ${total}`, [index, total]);
+  const inCoding = Boolean(codingProblem || currentQuestion?.isCoding || phase === "coding");
+
+  function syncCodingFromQuestion(q: Question | null | undefined, explicit?: CodingProblem | null) {
+    setCurrentQuestion(q || null);
+    if (explicit) {
+      setCodingProblem(explicit);
+      setPhase("coding");
+      return;
+    }
+    if (q?.isCoding && q.codingProblemId) {
+      setCodingProblem(getCodingProblem(q.codingProblemId) || null);
+      setPhase("coding");
+      return;
+    }
+    setCodingProblem(null);
+    if (q?.phase) setPhase(q.phase);
+  }
 
   function clearAnswerTimer() {
     if (answerTimerRef.current) {
@@ -245,7 +277,11 @@ export default function InterviewPage() {
       return;
     }
     setAvatar("idle");
-    setStatus("说完了。点麦克风开始说，再说一次结束并提交");
+    setStatus(
+      codingProblem
+        ? "编程环节：在下方编辑器手写并跑测"
+        : "说完了。点麦克风开始说，再说一次结束并提交",
+    );
   }
 
   useEffect(() => {
@@ -279,6 +315,8 @@ export default function InterviewPage() {
             candidateName: json.candidateName || "",
             answerSoftLimitSec: json.answerSoftLimitSec,
             answerHardLimitSec: json.answerHardLimitSec,
+            phase: json.phase,
+            codingProblem: json.codingProblem || null,
           };
         } catch (e) {
           if (!cancelled) {
@@ -294,6 +332,8 @@ export default function InterviewPage() {
       setTotal(data.total);
       setInterviewerName(data.interviewerName || "王老师");
       lastUtteranceRef.current = data.utterance;
+      syncCodingFromQuestion(data.question, data.codingProblem);
+      if (data.phase) setPhase(data.phase);
       applyAnswerLimits(
         data.answerSoftLimitSec ?? data.config?.answerSoftLimitSec,
         data.answerHardLimitSec ?? data.config?.answerHardLimitSec,
@@ -345,6 +385,10 @@ export default function InterviewPage() {
 
   async function submitTurn(text: string, silenceStuck = false) {
     if (busyRef.current || !sessionId || interviewEndedRef.current) return;
+    if (codingProblem || currentQuestion?.isCoding || phase === "coding") {
+      setError("编程环节请在编辑器中提交代码");
+      return;
+    }
     busyRef.current = true;
     setBusy(true);
     setError("");
@@ -369,6 +413,8 @@ export default function InterviewPage() {
 
       if (typeof data.index === "number") setIndex(data.index);
       if (typeof data.total === "number") setTotal(data.total);
+      if (data.phase) setPhase(data.phase as InterviewPhase);
+      syncCodingFromQuestion(data.question, data.codingProblem);
 
       if (data.answerSoftLimitSec != null || data.answerHardLimitSec != null) {
         applyAnswerLimits(data.answerSoftLimitSec, data.answerHardLimitSec);
@@ -403,6 +449,9 @@ export default function InterviewPage() {
       if (nextLine) {
         await playUtterance(nextLine);
       }
+      if (data.question?.isCoding || data.codingProblem) {
+        setStatus("编程环节：在下方编辑器手写并跑测");
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "回合失败");
       setStatus("出了点小状况，点麦克风再说一次也行");
@@ -422,12 +471,50 @@ export default function InterviewPage() {
 
   submitTurnRef.current = submitTurn;
 
+  async function handleCodingSubmitted(payload: {
+    codingResult: import("@/lib/types").CodingRunResult;
+    utterance?: string;
+    done?: boolean;
+    feedback?: unknown;
+    index?: number;
+    total?: number;
+    question?: unknown;
+    phase?: string;
+  }) {
+    if (typeof payload.index === "number") setIndex(payload.index);
+    if (typeof payload.total === "number") setTotal(payload.total);
+    if (payload.phase) setPhase(payload.phase as InterviewPhase);
+    syncCodingFromQuestion(payload.question as Question | null);
+
+    const nextLine = String(payload.utterance || "");
+    if (payload.done) {
+      markInterviewEnded("面试官正在收尾…");
+      if (nextLine) {
+        try {
+          await playUtterance(nextLine, { ended: true });
+        } catch {
+          // ignore
+        }
+      }
+      if (payload.feedback) {
+        sessionStorage.setItem(
+          `feedback:${sessionId}`,
+          JSON.stringify(payload.feedback as FeedbackReport),
+        );
+      }
+      setTimeout(() => router.push(`/feedback/${sessionId}`), 700);
+      return;
+    }
+    if (nextLine) await playUtterance(nextLine);
+  }
+
   async function maybeBargeIn(partial: string) {
     if (
       bargedRef.current ||
       busyRef.current ||
       speakingRef.current ||
-      interviewEndedRef.current
+      interviewEndedRef.current ||
+      codingProblem
     ) {
       return;
     }
@@ -449,6 +536,10 @@ export default function InterviewPage() {
 
   async function startListening(opts?: { keepBuffer?: boolean }) {
     if (!audioReadyRef.current || busyRef.current || interviewEndedRef.current) return;
+    if (codingProblem || phase === "coding") {
+      setError("编程环节请用编辑器作答");
+      return;
+    }
     if (speakingRef.current) {
       setError("等我说完再开口就行");
       return;
@@ -626,6 +717,10 @@ export default function InterviewPage() {
       return;
     }
     if (interviewEndedRef.current || interviewEnded) return;
+    if (codingProblem || phase === "coding") {
+      setError("编程环节请用编辑器作答");
+      return;
+    }
     if (busyRef.current) return;
     if (speakingRef.current) {
       setError("等我说完再开口就行");
@@ -679,8 +774,13 @@ export default function InterviewPage() {
         <p className="mt-2 text-sm text-[var(--muted)]">
           {interviewEnded
             ? "本场面试已结束"
-            : "听完后点麦克风开始说，再说一次结束并提交"}
+            : codingProblem
+              ? "编程环节：手写代码并跑测"
+              : "听完后点麦克风开始说，再说一次结束并提交"}
         </p>
+        {phase ? (
+          <p className="mt-1 text-xs text-[var(--accent-2)]">阶段 · {phaseLabel(phase)}</p>
+        ) : null}
       </header>
 
       <DigitalHuman state={avatar} progress={progress} interviewerName={interviewerName} />
@@ -718,21 +818,30 @@ export default function InterviewPage() {
         </button>
       ) : (
         <>
-          <div className="relative mt-10">
-            {listening ? <span className="voice-ring" /> : null}
-            <button
-              type="button"
-              disabled={busy || interviewEnded || avatar === "speaking"}
-              onClick={() => void toggleMic()}
-              className={`relative flex h-24 w-24 items-center justify-center rounded-full border-2 text-sm font-semibold transition ${
-                listening
-                  ? "border-[var(--accent-2)] bg-[var(--accent-2)]/20 text-[var(--accent-2)]"
-                  : "border-[var(--accent)] bg-[var(--accent)] text-[#042a26]"
-              } disabled:opacity-50`}
-            >
-              {interviewEnded ? "已结束" : listening ? "说完了" : busy ? "…" : "麦克风"}
-            </button>
-          </div>
+          {codingProblem && !interviewEnded ? (
+            <CodingStep
+              problem={codingProblem}
+              sessionId={sessionId}
+              disabled={busy || avatar === "speaking"}
+              onSubmitted={(p) => void handleCodingSubmitted(p)}
+            />
+          ) : (
+            <div className="relative mt-10">
+              {listening ? <span className="voice-ring" /> : null}
+              <button
+                type="button"
+                disabled={busy || interviewEnded || avatar === "speaking" || Boolean(codingProblem)}
+                onClick={() => void toggleMic()}
+                className={`relative flex h-24 w-24 items-center justify-center rounded-full border-2 text-sm font-semibold transition ${
+                  listening
+                    ? "border-[var(--accent-2)] bg-[var(--accent-2)]/20 text-[var(--accent-2)]"
+                    : "border-[var(--accent)] bg-[var(--accent)] text-[#042a26]"
+                } disabled:opacity-50`}
+              >
+                {interviewEnded ? "已结束" : listening ? "说完了" : busy ? "…" : "麦克风"}
+              </button>
+            </div>
+          )}
 
           <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
             <button
@@ -743,22 +852,26 @@ export default function InterviewPage() {
             >
               重播上一句
             </button>
-            <button
-              type="button"
-              disabled={busy || interviewEnded || avatar === "speaking"}
-              onClick={() => void submitTurn("我不会")}
-              className="rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--muted)] disabled:opacity-50"
-            >
-              模拟卡壳
-            </button>
-            <button
-              type="button"
-              disabled={interviewEnded}
-              onClick={() => setShowTextFallback((value) => !value)}
-              className="rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--muted)] disabled:opacity-50"
-            >
-              {showTextFallback ? "收起文字作答" : "文字作答（备用）"}
-            </button>
+            {!codingProblem ? (
+              <button
+                type="button"
+                disabled={busy || interviewEnded || avatar === "speaking"}
+                onClick={() => void submitTurn("我不会")}
+                className="rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--muted)] disabled:opacity-50"
+              >
+                模拟卡壳
+              </button>
+            ) : null}
+            {!codingProblem ? (
+              <button
+                type="button"
+                disabled={interviewEnded}
+                onClick={() => setShowTextFallback((value) => !value)}
+                className="rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--muted)] disabled:opacity-50"
+              >
+                {showTextFallback ? "收起文字作答" : "文字作答（备用）"}
+              </button>
+            ) : null}
             <button
               type="button"
               disabled={interviewEnded}
@@ -769,7 +882,7 @@ export default function InterviewPage() {
             </button>
           </div>
 
-          {showTextFallback && !interviewEnded ? (
+          {showTextFallback && !interviewEnded && !codingProblem ? (
             <div className="mt-6 w-full max-w-lg space-y-3 rounded-2xl border border-[var(--line)] bg-[var(--card)]/80 p-4">
               <p className="text-xs text-[var(--muted)]">
                 没麦克风时可用文字；本机请尽量用 Chrome 并允许麦克风。

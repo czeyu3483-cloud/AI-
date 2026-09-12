@@ -1,13 +1,19 @@
 import type {
+  ConflictExplainOutcome,
   Question,
+  ResumeConflictKind,
+  ResumeConflictLevel,
+  ResumeConflictRecord,
   ResumeConsistencyAnalysis,
   ResumeProfile,
 } from "./types";
 
 export type ResumeConflictHit = {
-  kind: "stack" | "metric" | "ownership" | "project_claim" | "role";
+  kind: ResumeConflictKind;
+  level: ResumeConflictLevel;
   resumeSide: string;
   answerSide: string;
+  resumeExcerpt?: string;
 };
 
 /** 互斥技术族：简历写了族内 A、口述强调族内 B → 冲突 */
@@ -20,6 +26,42 @@ const STACK_FAMILIES: string[][] = [
   ["node.js", "nodejs", "node", "deno", "bun"],
   ["kubernetes", "k8s", "docker swarm"],
 ];
+
+const LEVEL_LABEL: Record<ResumeConflictLevel, string> = {
+  1: "直接矛盾",
+  2: "角色漂移",
+  3: "贡献注水",
+  4: "细节模糊",
+  5: "技术栈不符",
+};
+
+export function conflictLevelLabel(level: ResumeConflictLevel): string {
+  return LEVEL_LABEL[level];
+}
+
+/** 旧 kind → 规范 level */
+export function levelForKind(kind: ResumeConflictKind): ResumeConflictLevel {
+  switch (kind) {
+    case "direct_contradiction":
+    case "metric":
+      return 1;
+    case "role_drift":
+    case "role":
+    case "timeline":
+      return 2;
+    case "contribution_inflation":
+    case "ownership":
+    case "project_claim":
+      return 3;
+    case "fuzzy_detail":
+      return 4;
+    case "stack_mismatch":
+    case "stack":
+      return 5;
+    default:
+      return 3;
+  }
+}
 
 function normalizeTech(s: string): string {
   return s.toLowerCase().replace(/\s+/g, "").replace(/\.js$/i, "js");
@@ -82,8 +124,17 @@ function nameMentioned(hay: string, name: string): boolean {
   return hay.includes(name) || hay.includes(name.replace(/\s+/g, ""));
 }
 
+function excerptAround(blob: string, needle: string, radius = 60): string {
+  if (!blob || !needle) return (blob || "").slice(0, 120);
+  const idx = blob.toLowerCase().indexOf(needle.toLowerCase());
+  if (idx < 0) return blob.slice(0, 120);
+  const start = Math.max(0, idx - radius);
+  const end = Math.min(blob.length, idx + needle.length + radius);
+  return `${start > 0 ? "…" : ""}${blob.slice(start, end)}${end < blob.length ? "…" : ""}`;
+}
+
 /**
- * 轻量启发式：口述 vs 简历冲突。
+ * 轻量启发式：口述 vs 简历冲突，并给出 1–5 等级。
  * 明确承认造假/挂名不在此处理（走诚信结束）。
  */
 export function detectResumeConflict(
@@ -95,7 +146,6 @@ export function detectResumeConflict(
   const text = answer.trim();
   if (text.length < 8) return null;
 
-  // 明确造假/挂名交给诚信路径
   if (
     /乱写|瞎写|编的|编造|杜撰|假的|造假|注水|假经历|挂名|其实不是我做的|项目其实不是我做的/.test(
       text,
@@ -120,8 +170,9 @@ export function detectResumeConflict(
       ...(e.highlights || []),
     ]),
   ].join("\n");
+  const raw = resume.rawText || resumeBlob;
 
-  // 1) 栈冲突：口述强调族内另一技术，简历已写同族另一项
+  // Level 5: 栈不符
   const resumeTechs = resumeTechList(resume);
   const answerTechs = answerTechMentions(text);
   if (
@@ -142,16 +193,18 @@ export function detectResumeConflict(
         );
         if (conflictAnswer.length) {
           return {
-            kind: "stack",
+            kind: "stack_mismatch",
+            level: 5,
             resumeSide: onResume[0]!,
             answerSide: conflictAnswer[0]!,
+            resumeExcerpt: excerptAround(raw, onResume[0]!),
           };
         }
       }
     }
   }
 
-  // 2) 指标冲突：口述出现简历未记载、且与简历同单位数字偏差大的指标
+  // Level 1: 指标直接矛盾（同单位偏差大）
   const resumeMetrics = extractPercentsAndMs(resumeBlob);
   const answerMetrics = extractPercentsAndMs(text);
   if (resumeMetrics.length && answerMetrics.length) {
@@ -178,20 +231,48 @@ export function detectResumeConflict(
       }
     }
     if (cands.length) {
-      // 优先选相对偏差中等、数值更接近的一对（避免拿「优化前」去对「优化后」）
       cands.sort((a, b) => a.rel - b.rel);
       const best = cands[0]!;
-      return { kind: "metric", resumeSide: best.rm, answerSide: best.am };
+      return {
+        kind: "direct_contradiction",
+        level: 1,
+        resumeSide: best.rm,
+        answerSide: best.am,
+        resumeExcerpt: excerptAround(raw, best.rm),
+      };
     }
   }
 
-  // 3) 所有权弱否认（未到「其实不是我做的」红线）：简历写负责，口述推给别人
+  // Level 3: 贡献注水 — 简历写「参与」，口述「主导/独立负责」
+  if (
+    /我(独立)?(主导|负责|从零搭建|一个人做完)|我是(核心|owner|负责人)/.test(text) &&
+    /参与|协助|帮忙|跟做/.test(resumeBlob) &&
+    !/主导|独立负责|负责人|核心开发/.test(
+      (resume.projects || [])
+        .map((p) => `${p.role || ""} ${(p.highlights || []).join(" ")}`)
+        .join(" "),
+    )
+  ) {
+    const proj =
+      names.find((n) => nameMentioned(question?.prompt || "", n) || nameMentioned(text, n)) ||
+      names[0] ||
+      "该项目";
+    return {
+      kind: "contribution_inflation",
+      level: 3,
+      resumeSide: `${proj}（简历偏参与/协助）`,
+      answerSide: text.replace(/\s+/g, "").slice(0, 28),
+      resumeExcerpt: excerptAround(raw, proj),
+    };
+  }
+
+  // Level 2 / ownership: 简历写负责，口述推给别人（角色漂移 / 弱否认）
   const onResumeProject =
     Boolean(question?.fromResume) ||
     names.some((n) => nameMentioned(question?.prompt || "", n));
   if (
     onResumeProject &&
-    /不是我(主)?做的|我没怎么做|主要是(别人|同学|同事|学长)|我只是打杂|我参与不多|我只是旁边|基本上别人做/.test(
+    /不是我(主)?做的|我没怎么做|主要是(别人|同学|同事|学长)|我只是打杂|我参与不多|我只是旁边|基本上别人做|我主要是整理材料|沟通联络/.test(
       text,
     )
   ) {
@@ -201,14 +282,17 @@ export function detectResumeConflict(
       "该项目";
     const role =
       (resume.projects || []).find((p) => p.name === proj)?.role || "负责/核心参与";
+    const isRoleDrift = /整理材料|沟通联络|打杂|对接/.test(text);
     return {
-      kind: "ownership",
+      kind: isRoleDrift ? "role_drift" : "ownership",
+      level: isRoleDrift ? 2 : 3,
       resumeSide: `${proj}（${role}）`,
       answerSide: text.replace(/\s+/g, "").slice(0, 24),
+      resumeExcerpt: excerptAround(raw, proj),
     };
   }
 
-  // 4) 宣称主导一个简历上没有的项目名（动词长短优先：做过 > 负责）
+  // Level 3: 宣称主导一个简历上没有的项目
   const claimMatchers: RegExp[] = [
     /我(?:独立)?(?:做过|做了|主导|完成了?|负责)(?:了|过)?了?[「『《“"]([\u4e00-\u9fffA-Za-z0-9·\-_]{2,20})[」』》”"]/,
     /我(?:独立)?(?:做过|做了|主导|完成了?|负责).{0,4}一个([\u4e00-\u9fffA-Za-z0-9·\-_]{2,16})(?:项目|系统|平台|中台)/,
@@ -236,39 +320,120 @@ export function detectResumeConflict(
     ) {
       return {
         kind: "project_claim",
+        level: 3,
         resumeSide: names.slice(0, 2).join("、"),
         answerSide: /项目|系统|平台|中台/.test(claimed) ? claimed : `${claimed}项目`,
+        resumeExcerpt: (resume.rawText || "").slice(0, 160),
       };
     }
   }
 
-  // 5) 角色冲突：简历写负责人/核心，口述说实习打杂且否认职责
+  // Level 2: 角色冲突 — 简历负责人 vs 口述打杂
   const resumeOwner = /负责人|核心开发|独立负责|owner|tech lead/i.test(resumeBlob);
   if (
     resumeOwner &&
-    /我只是实习打杂|我没什么话语权|决策都是别人|我定不了/.test(text)
+    /我只是实习打杂|我没什么话语权|决策都是别人|我定不了|我主要是整理材料|沟通联络/.test(text)
   ) {
     return {
-      kind: "role",
+      kind: "role_drift",
+      level: 2,
       resumeSide: "负责人/核心职责",
       answerSide: text.replace(/\s+/g, "").slice(0, 24),
+      resumeExcerpt: excerptAround(raw, "负责"),
+    };
+  }
+
+  // Level 4: 模糊细节（风险备注，非即时造假）
+  if (
+    text.length > 24 &&
+    /应该是|大概是|可能是|我猜|好像是|记不清具体|差不多就|估计有|不太记得/.test(text) &&
+    /(项目|简历|负责|指标|优化|上线|性能|模块)/.test(text)
+  ) {
+    return {
+      kind: "fuzzy_detail",
+      level: 4,
+      resumeSide: "简历中的可核验细节",
+      answerSide: text.replace(/\s+/g, "").slice(0, 28),
+      resumeExcerpt: (resume.rawText || resumeBlob).slice(0, 120),
     };
   }
 
   return null;
 }
 
-/** 固定挑战话术：优先点名两侧差异 */
+/**
+ * 专业挑战话术：永不说「你造假」。
+ * 「简历写的是 A，你刚才说 B，不太一样，解释一下」
+ */
 export function craftResumeConflictUtterance(hit: ResumeConflictHit): string {
   const r = hit.resumeSide.slice(0, 40);
   const a = hit.answerSide.slice(0, 40);
-  if (r && a) {
-    return `简历上写的是「${r}」，你刚才说的是「${a}」，哪边为准？你实际做了什么？`;
+  switch (hit.level) {
+    case 1:
+      return `简历写的是「${r}」，你刚才说「${a}」，不太一样，解释一下——哪边是可核验的事实？`;
+    case 2:
+      return `简历写的是「${r}」，你刚才更像在说「${a}」。你实际交付物是什么？边界在哪？`;
+    case 3:
+      return `简历侧是「${r}」，你口述强调「${a}」。哪一部分是你拍板/独立交付的？有没有评审或上线记录可以对照？`;
+    case 4:
+      return `这个点目前偏模糊。对照简历，你能补一个可核验的细节吗（数字、模块名或你亲手改的文件/接口）？`;
+    case 5:
+      return `简历写的是「${r}」，你刚才提到「${a}」。是哪个项目/阶段用的，还是自学/包装进简历的？`;
+    default:
+      return `简历写的是「${r}」，你刚才说「${a}」，不太一样，解释一下。`;
   }
-  return "这个点和简历写法有点不一致——你实际做了什么？";
 }
 
-/** 启发式结果 → 统一分析结果（LLM 失败时的 fallback） */
+/** 解释归类：OK → 简历表述不完整；混乱 → 诚信风险；忘记 → 记忆模糊；承认 → 造假 */
+export function classifyConflictExplanation(answer: string): ConflictExplainOutcome {
+  const text = answer.trim();
+  if (
+    /乱写|瞎写|编的|编造|杜撰|假的|造假|注水|挂名|我承认|确实是吹|简历写大了|夸大了/.test(
+      text,
+    )
+  ) {
+    return "admits_fabricate";
+  }
+  if (/记不清|忘了|不太记得|想不起来|记忆有点模糊|时间太久/.test(text)) {
+    return "memory_fuzzy";
+  }
+  if (
+    text.length >= 40 &&
+    (/简历.*(写|表述).*(不全|笼统|简化|没写清)|表述不完整|简历没写细|当时简历空间不够|我实际做的是/.test(
+      text,
+    ) ||
+      (/\d|接口|模块|PR|commit|评审|上线|我独立|我负责/.test(text) &&
+        !/应该是|大概|可能|好像|猜/.test(text)))
+  ) {
+    return "ok_incomplete_resume";
+  }
+  if (
+    text.length < 25 ||
+    /反正|随便|差不多|就是那样|说不清|混乱|不知道怎么说/.test(text)
+  ) {
+    return "chaotic_integrity_risk";
+  }
+  // 有一定内容但不够扎实
+  if (/应该是|大概|可能|好像|猜/.test(text)) return "chaotic_integrity_risk";
+  return "ok_incomplete_resume";
+}
+
+export function utteranceForExplainOutcome(outcome: ConflictExplainOutcome): string {
+  switch (outcome) {
+    case "ok_incomplete_resume":
+      return "明白了，更像是简历表述不完整。我们按你刚才说的实际交付继续。";
+    case "memory_fuzzy":
+      return "好，先记成经历记忆模糊。后面尽量只讲你现在还能核验的部分。";
+    case "chaotic_integrity_risk":
+      return "这个解释目前对不上，我会记一笔诚信风险，我们先换个角度继续。";
+    case "admits_fabricate":
+      return "那你先把简历改扎实了再来面试，今天就先到这里。";
+    default:
+      return "先记下了，我们继续。";
+  }
+}
+
+/** 启发式结果 → 统一分析结果 */
 export function heuristicToAnalysis(
   hit: ResumeConflictHit | null,
   alreadyChallenged: boolean,
@@ -276,14 +441,42 @@ export function heuristicToAnalysis(
   if (!hit) {
     return { conflict: false, severity: "none", source: "heuristic" };
   }
+  // Level 4 默认只记风险，不立刻 integrity；Level 1 二次可 integrity
+  let severity: ResumeConsistencyAnalysis["severity"] = "challenge";
+  if (alreadyChallenged && (hit.level === 1 || hit.level === 3)) {
+    severity = "integrity";
+  }
+  if (hit.level === 4 && !alreadyChallenged) {
+    severity = "challenge";
+  }
   return {
     conflict: true,
-    severity: alreadyChallenged ? "integrity" : "challenge",
+    severity,
+    level: hit.level,
     kind: hit.kind,
     resumeSide: hit.resumeSide,
     answerSide: hit.answerSide,
     utterance: craftResumeConflictUtterance(hit),
+    resumeExcerpt: hit.resumeExcerpt,
     source: "heuristic",
+  };
+}
+
+export function analysisToRecord(
+  analysis: ResumeConsistencyAnalysis,
+  questionId?: string,
+): ResumeConflictRecord | null {
+  if (!analysis.conflict || analysis.severity === "none") return null;
+  const level = analysis.level || levelForKind(analysis.kind || "other");
+  return {
+    level,
+    kind: analysis.kind || "other",
+    resumeSide: analysis.resumeSide || "",
+    answerSide: analysis.answerSide || "",
+    questionId,
+    utterance: analysis.utterance,
+    resumeExcerpt: analysis.resumeExcerpt,
+    source: analysis.source,
   };
 }
 
@@ -302,12 +495,13 @@ export function resumeContextForPolish(resume?: ResumeProfile): string {
   return `技能:${skills || "—"}; 项目:${projects || "—"}`.slice(0, 500);
 }
 
-/** 供一致性 Agent 的结构化简历 JSON（截断） */
+/** 供一致性 Agent：结构化 + rawText 摘录（永不丢原文） */
 export function resumeJsonForConsistency(resume?: ResumeProfile): Record<string, unknown> | null {
   if (!resume) return null;
   return {
     name: resume.name,
     summary: (resume.summary || "").slice(0, 400),
+    rawTextExcerpt: (resume.rawText || "").slice(0, 2500),
     skills: (resume.skills || []).slice(0, 16),
     experiences: (resume.experiences || []).slice(0, 4).map((e) => ({
       org: e.org,
@@ -324,7 +518,7 @@ export function resumeJsonForConsistency(resume?: ResumeProfile): Record<string,
   };
 }
 
-/** 是否值得跑简历一致性分析（经历/项目相关回答） */
+/** 是否值得跑简历一致性分析 */
 export function shouldAnalyzeResumeConsistency(
   answer: string,
   question?: Question,
@@ -336,9 +530,9 @@ export function shouldAnalyzeResumeConsistency(
       text,
     )
   ) {
-    // 明确承认造假 → 走诚信路径，不必再分析冲突
     return false;
   }
+  if (question?.isCoding) return false;
   if (question?.fromResume) return true;
   if (
     /项目|简历|负责|经历|实习|公司|模块|接口|优化|指标|技术栈|我做了|主导|参与/.test(
@@ -353,4 +547,20 @@ export function shouldAnalyzeResumeConsistency(
     return true;
   }
   return false;
+}
+
+/**
+ * 简历已写明的技能，不要再问「用了什么框架」这类事实题；
+ * 深挖 WHY / 规模 / 虚拟列表 / 状态 / 所有权。
+ */
+export function resumeKnownStacks(resume?: ResumeProfile): string[] {
+  if (!resume) return [];
+  return resumeTechList(resume);
+}
+
+export function shouldAvoidFactQuestion(prompt: string, resume?: ResumeProfile): boolean {
+  const known = resumeKnownStacks(resume);
+  if (!known.length) return false;
+  if (!/用了什么|什么框架|什么技术栈|用的什么语言|你会什么/.test(prompt)) return false;
+  return known.some((t) => /react|vue|angular|typescript|node|java|python/i.test(t));
 }

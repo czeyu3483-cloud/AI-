@@ -30,19 +30,19 @@ export const DEMO_TRACKS: Array<{
   {
     id: "biz",
     label: "业务面",
-    hint: "技术与项目深挖，偏追问细节与取舍",
+    hint: "简历调研→深挖→专业题→编程；追问细节与取舍，不编无关题库",
     enabled: true,
   },
   {
     id: "hr_final",
     label: "HR终面",
-    hint: "适配性、动机、协作与职业规划，少硬核算法/架构",
+    hint: "简历协作切入 → 适配/动机/协作；中立不中途夸赞",
     enabled: true,
   },
 ];
 
 /**
- * 业务面：按 ~30–40 分钟语音面设计（约 8 主问题 + 有限追问）。
+ * 业务面：按 ~30–40 分钟语音面设计（约 8 主问题：调研/深挖/专业/编程）。
  * 偏技术深挖，允许更多 FOLLOW_UP / 分级提示。
  */
 export const PRESSURE_CONFIG: BehaviorConfig = {

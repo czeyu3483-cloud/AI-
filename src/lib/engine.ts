@@ -9,6 +9,7 @@ import {
   VAGUE_SOFT_SKIP_UTTERANCE,
   configForTrack,
 } from "./config";
+import { pickCodingProblem } from "./codingProblems";
 import {
   FABRICATION_PROBE_UTTERANCE,
   NOT_DONE_TRANSFER_UTTERANCE,
@@ -17,10 +18,14 @@ import {
   pickCoachLine,
   RESUME_CONFLICT_GENERIC_UTTERANCE,
 } from "./interviewerPolicy";
+import { phaseLabel } from "./phases";
 import { matchReplyBank } from "./replyBank";
 import {
+  analysisToRecord,
+  classifyConflictExplanation,
   craftResumeConflictUtterance,
   detectResumeConflict,
+  utteranceForExplainOutcome,
 } from "./resumeConflict";
 import {
   pickAdvancePrefix,
@@ -34,6 +39,7 @@ import type {
   AbilityTag,
   CandidateLevel,
   InterviewAction,
+  InterviewPhase,
   InterviewSession,
   Question,
   QuestionRuntime,
@@ -91,6 +97,7 @@ export function buildQuestionQueue(
       id: `hr_resume_proj_${idx + 1}`,
       roleId: "rd_general" as const,
       trackId: "hr_final" as const,
+      phase: "hr_fit" as const,
       prompt: `结合你简历里的「${p.name}」：你在团队里更常扮演什么角色？和别人协作时你最在意什么？`,
       intent: "hr_resume_collab",
       followUpHints: ["协作方式", "冲突", ...(p.highlights || [])],
@@ -105,6 +112,7 @@ export function buildQuestionQueue(
       id: `hr_resume_exp_${idx + 1}`,
       roleId: "rd_general" as const,
       trackId: "hr_final" as const,
+      phase: "hr_fit" as const,
       prompt: `你在${e.org || "上一段经历"}时，印象最深的一次协作或冲突是什么？你怎么处理的？`,
       intent: "hr_resume_conflict",
       followUpHints: ["沟通", ...(e.highlights || [])],
@@ -115,39 +123,160 @@ export function buildQuestionQueue(
       referencePoints: [],
       fromResume: true,
     }));
-    return [...fromResume, ...fromExp, ...HR_QUESTIONS].slice(0, cfg.questionsPerSession);
+    const hrBank = HR_QUESTIONS.map((q) => ({ ...q, phase: "hr_fit" as const }));
+    return [...fromResume, ...fromExp, ...hrBank].slice(0, cfg.questionsPerSession);
   }
 
-  const fromProjects: Question[] = (resume?.projects || []).slice(0, 3).map((p, idx) => ({
-    id: `resume_proj_${idx + 1}`,
-    roleId: "rd_general" as const,
-    trackId: "biz" as const,
-    prompt: `看你简历里的「${p.name}」：你个人具体负责哪一块？当时最关键的技术取舍是什么？`,
-    intent: "resume_ownership_tradeoff",
-    followUpHints: ["个人贡献", "失败方案", "边界", ...(p.highlights || [])],
+  // —— 业务面：显式四阶段（简历调研 → 深挖 → 专业题 → 编程）——
+  const primary = resume?.projects?.[0];
+  const secondary = resume?.projects?.[1];
+  const stackHint = (primary?.stack || resume?.skills || []).slice(0, 4);
+  const stackKnown = stackHint.length > 0;
+
+  const research: Question[] = [];
+  if (primary) {
+    research.push({
+      id: "biz_research_bg",
+      roleId: "rd_general",
+      trackId: "biz",
+      phase: "resume_research",
+      prompt: `先了解一下简历里的「${primary.name}」：项目背景是什么，你当时的角色，最终结果怎么衡量？`,
+      intent: "resume_research_bg",
+      followUpHints: ["背景", "角色", "指标", ...(primary.highlights || [])],
+      rubrics: [
+        { dimension: "ownership", weight: 0.5, good: "角色清晰", poor: "空泛" },
+        { dimension: "impact", weight: 0.5, good: "有可验证结果", poor: "无结果" },
+      ],
+      referencePoints: stackHint,
+      fromResume: true,
+    });
+    // 已有栈 → 不问「用了什么框架」，改问 WHY / 规模 / 状态与取舍
+    research.push({
+      id: "biz_research_tradeoff",
+      roleId: "rd_general",
+      trackId: "biz",
+      phase: "resume_research",
+      prompt: stackKnown
+        ? `「${primary.name}」里你用过${stackHint.slice(0, 2).join("、")}——为什么这么选？规模大概怎样，状态/列表这类难点你怎么处理的？`
+        : `「${primary.name}」里最关键的技术取舍是什么？为什么这么选，什么场景下你会换方案？`,
+      intent: "resume_research_tradeoff",
+      followUpHints: ["取舍理由", "规模", "虚拟列表/状态", ...(primary.highlights || [])],
+      rubrics: [
+        { dimension: "tradeoff", weight: 0.5, good: "讲清为何选", poor: "无取舍" },
+        { dimension: "depth", weight: 0.5, good: "有规模与约束", poor: "空谈技术名" },
+      ],
+      referencePoints: stackHint,
+      fromResume: true,
+    });
+  } else {
+    research.push({
+      ...RD_QUESTIONS[0]!,
+      id: "biz_research_fallback",
+      phase: "resume_research",
+      fromResume: false,
+    });
+  }
+
+  const deepDive: Question[] = [];
+  if (primary) {
+    deepDive.push({
+      id: "biz_deep_ownership",
+      roleId: "rd_general",
+      trackId: "biz",
+      phase: "resume_deep_dive",
+      prompt: `再往下挖「${primary.name}」：哪个模块是你个人真正负责的？出过错或失败方案吗，你怎么收的？`,
+      intent: "resume_deep_ownership",
+      followUpHints: ["模块边界", "失败", "协作", ...(primary.highlights || [])],
+      rubrics: [
+        { dimension: "ownership", weight: 0.5, good: "落到个人动作", poor: "复述宣传语" },
+        { dimension: "pitfall", weight: 0.5, good: "有失败与复盘", poor: "只谈成功" },
+      ],
+      referencePoints: primary.highlights || [],
+      fromResume: true,
+    });
+  }
+  if (secondary) {
+    deepDive.push({
+      id: "biz_deep_collab",
+      roleId: "rd_general",
+      trackId: "biz",
+      phase: "resume_deep_dive",
+      prompt: `「${secondary.name}」里你和协作方怎么拆活？有没有职责边界说不清的时候？`,
+      intent: "resume_deep_collab",
+      followUpHints: ["协作", "边界", ...(secondary.highlights || [])],
+      rubrics: [
+        { dimension: "ownership", weight: 0.5, good: "边界清晰", poor: "全程我们" },
+        { dimension: "collaboration", weight: 0.5, good: "有协作动作", poor: "空话" },
+      ],
+      referencePoints: [],
+      fromResume: true,
+    });
+  } else if (resume?.experiences?.[0]) {
+    const e = resume.experiences[0];
+    deepDive.push({
+      id: "biz_deep_exp",
+      roleId: "rd_general",
+      trackId: "biz",
+      phase: "resume_deep_dive",
+      prompt: `你在${e.org || "上一段经历"}担任${e.title || "相关角色"}时，印象最深的一次排查或取舍是什么？你具体做了什么？`,
+      intent: "resume_experience_depth",
+      followUpHints: ["职责边界", ...(e.highlights || [])],
+      rubrics: [
+        { dimension: "ownership", weight: 0.5, good: "落到个人动作", poor: "空泛描述" },
+        { dimension: "depth", weight: 0.5, good: "有过程与结果", poor: "只有结论" },
+      ],
+      referencePoints: [],
+      fromResume: true,
+    });
+  }
+
+  // 专业题：从题库挑后端/前端向小题，避开「用了什么框架」类事实题
+  const knowledgeBank = RD_QUESTIONS.filter(
+    (q) =>
+      !/用了什么|什么框架|什么技术栈/.test(q.prompt) &&
+      q.id !== "rd_q1",
+  )
+    .slice(0, 3)
+    .map((q, i) => ({
+      ...q,
+      id: `biz_knowledge_${i + 1}`,
+      phase: "professional_knowledge" as const,
+      fromResume: false,
+    }));
+
+  const codingProblem = pickCodingProblem((resume?.projects?.length || 0) + 1);
+  const codingQ: Question = {
+    id: `biz_coding_${codingProblem.id}`,
+    roleId: "rd_general",
+    trackId: "biz",
+    phase: "coding",
+    prompt: `编程环节：${codingProblem.title}。请在编辑器里手写实现并跑测。${codingProblem.prompt}`,
+    intent: "coding_exercise",
+    followUpHints: [codingProblem.complexityHint || "复杂度"],
     rubrics: [
-      { dimension: "ownership", weight: 0.5, good: "落到个人动作", poor: "复述宣传语" },
-      { dimension: "tradeoff", weight: 0.5, good: "讲清为何选", poor: "无取舍" },
-    ],
-    referencePoints: p.stack || [],
-    fromResume: true,
-  }));
-  const fromExp: Question[] = (resume?.experiences || []).slice(0, 1).map((e, idx) => ({
-    id: `resume_exp_${idx + 1}`,
-    roleId: "rd_general" as const,
-    trackId: "biz" as const,
-    prompt: `你在${e.org || "上一段经历"}担任${e.title || "相关角色"}时，印象最深的一次排查或取舍是什么？你具体做了什么？`,
-    intent: "resume_experience_depth",
-    followUpHints: ["职责边界", ...(e.highlights || [])],
-    rubrics: [
-      { dimension: "ownership", weight: 0.5, good: "落到个人动作", poor: "空泛描述" },
-      { dimension: "depth", weight: 0.5, good: "有过程与结果", poor: "只有结论" },
+      { dimension: "coding", weight: 0.6, good: "用例通过且思路清晰", poor: "无法运行或全错" },
+      { dimension: "complexity", weight: 0.4, good: "能说明复杂度", poor: "无复杂度意识" },
     ],
     referencePoints: [],
-    fromResume: true,
-  }));
-  return [...fromProjects, ...fromExp, ...RD_QUESTIONS].slice(0, cfg.questionsPerSession);
+    fromResume: false,
+    isCoding: true,
+    codingProblemId: codingProblem.id,
+  };
+
+  // 保证编程环节不被 slice 裁掉
+  const ahead = [...research, ...deepDive, ...knowledgeBank].slice(
+    0,
+    Math.max(1, cfg.questionsPerSession - 1),
+  );
+  return [...ahead, codingQ];
 }
+
+export function phaseOf(session: InterviewSession): InterviewPhase {
+  const q = session.queue[session.currentIndex];
+  return q?.phase || (session.trackId === "hr_final" ? "hr_fit" : "resume_research");
+}
+
+export { phaseLabel } from "./phases";
 
 export function createRuntimes(queue: Question[]): QuestionRuntime[] {
   return queue.map((question) => ({
@@ -418,13 +547,21 @@ function advance(
   }
   session.currentIndex = nextIndex;
   const next = session.runtimes[nextIndex]!;
+  session.currentPhase = next.question.phase || phaseOf(session);
   const prefix =
     via === "SKIP_SOFT"
       ? skipText || pickSkipSoftPrefix(seed)
       : pickAdvancePrefix(seed);
+  // 阶段切换时简短提示（不赞美、不嘲讽）
+  const prevPhase = current.question.phase;
+  const nextPhase = next.question.phase;
+  const phaseBridge =
+    prevPhase && nextPhase && prevPhase !== nextPhase
+      ? `接下来进入${phaseLabel(nextPhase)}。`
+      : "";
   return {
     action: via === "SKIP_SOFT" ? "SKIP_SOFT" : "ASK",
-    utterance: `${prefix}${next.question.prompt}`,
+    utterance: `${prefix}${phaseBridge}${next.question.prompt}`,
     questionId: next.question.id,
     followUpCount: next.followUpCount,
     hintCount: next.hintCount,
@@ -754,39 +891,24 @@ export function decideTurn(input: {
     };
   }
 
-  // 口述 vs 简历冲突：首次专业挑战并打 authenticity_risk；反复/明显造假 → 诚信结束
+  // 口述 vs 简历冲突：按 1–5 级处理；先处理「待解释」的上一挑战
   {
-    const alreadyChallenged =
-      (session.authenticityChallengeCount || 0) > 0 || rt.resumeConflictProbeCount > 0;
-    let analysis = input.resumeAnalysis;
-    if (!analysis) {
-      const hit = detectResumeConflict(input.answer, session.resume, rt.question);
-      if (hit) {
-        analysis = {
-          conflict: true,
-          severity: alreadyChallenged ? "integrity" : "challenge",
-          kind: hit.kind,
-          resumeSide: hit.resumeSide,
-          answerSide: hit.answerSide,
-          utterance: craftResumeConflictUtterance(hit),
-          source: "heuristic",
-        };
-      }
-    }
-    if (analysis?.conflict && analysis.severity !== "none") {
+    // A) 上一轮已挑战 → 本轮归类解释
+    if (session.pendingConflictChallenge) {
+      const pending = session.pendingConflictChallenge;
+      const outcome = classifyConflictExplanation(input.answer);
+      signals.conflictExplainOutcome = outcome;
       signals.resumeConflict = true;
-      pendingTags.push("authenticity_risk");
-      addSessionTag(session, "authenticity_risk");
+      signals.resumeConflictLevel = pending.level;
+      pending.explainOutcome = outcome;
+      session.resumeConflicts = [...(session.resumeConflicts || []), pending];
+      session.pendingConflictChallenge = null;
 
-      const escalate =
-        analysis.severity === "integrity" ||
-        alreadyChallenged ||
-        rt.resumeConflictProbeCount >= 1;
-
-      if (escalate) {
-        signals.resumeConflictSeverity = "integrity";
+      if (outcome === "admits_fabricate") {
         signals.integrityBreach = true;
-        pendingTags.push("role_mismatch_suspected");
+        signals.resumeConflictSeverity = "integrity";
+        pendingTags.push("authenticity_risk", "role_mismatch_suspected");
+        addSessionTag(session, "authenticity_risk");
         if (pendingTags.length) rt.tags = Array.from(new Set([...rt.tags, ...pendingTags]));
         return {
           action: "FINISH",
@@ -802,19 +924,166 @@ export function decideTurn(input: {
         };
       }
 
+      if (outcome === "chaotic_integrity_risk") {
+        pendingTags.push("authenticity_risk");
+        addSessionTag(session, "authenticity_risk");
+        // Level 1 混乱解释 → 可升级诚信结束；其余记风险后换题/继续
+        if (pending.level === 1 || (session.authenticityChallengeCount || 0) >= 2) {
+          signals.integrityBreach = true;
+          signals.resumeConflictSeverity = "integrity";
+          pendingTags.push("role_mismatch_suspected");
+          if (pendingTags.length) rt.tags = Array.from(new Set([...rt.tags, ...pendingTags]));
+          return {
+            action: "FINISH",
+            utterance: INTEGRITY_END_UTTERANCE,
+            questionId: rt.question.id,
+            followUpCount: rt.followUpCount,
+            hintCount: rt.hintCount,
+            reframeCount: rt.reframeCount,
+            signals,
+            pendingTags,
+            done: true,
+            verbatim: true,
+          };
+        }
+        const decision = advance(
+          session,
+          "SKIP_SOFT",
+          utteranceForExplainOutcome(outcome),
+          signals,
+          pendingTags,
+        );
+        decision.verbatim = true;
+        return decision;
+      }
+
+      // ok / memory_fuzzy：专业收口后继续本题或推进
+      const note = utteranceForExplainOutcome(outcome);
+      if (outcome === "memory_fuzzy") {
+        pendingTags.push("authenticity_risk");
+        addSessionTag(session, "authenticity_risk");
+      }
+      if (input.answer.trim().length >= 40 && outcome === "ok_incomplete_resume") {
+        // 解释可接受 → 推进，不重复死磕
+        const decision = advance(session, "ASK", note, signals, pendingTags);
+        decision.utterance = `${note}${decision.utterance.replace(/^好[，,。. ]?/, "")}`;
+        decision.verbatim = true;
+        return decision;
+      }
+      return {
+        action: "FOLLOW_UP_OWNERSHIP",
+        utterance: `${note}那就按实际经历说：你亲手做的那一步是什么？`,
+        questionId: rt.question.id,
+        followUpCount: rt.followUpCount,
+        hintCount: rt.hintCount,
+        reframeCount: rt.reframeCount,
+        signals,
+        pendingTags: pendingTags.length ? pendingTags : undefined,
+        verbatim: true,
+      };
+    }
+
+    // B) 新冲突检测
+    const alreadyChallenged =
+      (session.authenticityChallengeCount || 0) > 0 || rt.resumeConflictProbeCount > 0;
+    let analysis = input.resumeAnalysis;
+    if (!analysis) {
+      const hit = detectResumeConflict(input.answer, session.resume, rt.question);
+      if (hit) {
+        analysis = {
+          conflict: true,
+          severity:
+            alreadyChallenged && (hit.level === 1 || hit.level === 3)
+              ? "integrity"
+              : "challenge",
+          level: hit.level,
+          kind: hit.kind,
+          resumeSide: hit.resumeSide,
+          answerSide: hit.answerSide,
+          utterance: craftResumeConflictUtterance(hit),
+          resumeExcerpt: hit.resumeExcerpt,
+          source: "heuristic",
+        };
+      }
+    }
+    if (analysis?.conflict && analysis.severity !== "none") {
+      signals.resumeConflict = true;
+      const level = analysis.level || 3;
+      signals.resumeConflictLevel = level;
+      pendingTags.push("authenticity_risk");
+      addSessionTag(session, "authenticity_risk");
+
+      const record = analysisToRecord(analysis, rt.question.id);
+
+      // Level 4：风险备注，不立刻强挑战升级；仅短记一次
+      if (level === 4 && rt.resumeConflictProbeCount === 0) {
+        if (record) {
+          record.explainOutcome = "pending";
+          session.resumeConflicts = [...(session.resumeConflicts || []), record];
+        }
+        rt.resumeConflictProbeCount += 1;
+        rt.followUpCount += 1;
+        return {
+          action: "FOLLOW_UP_PITFALL",
+          utterance:
+            analysis.utterance ||
+            "这个点目前偏模糊。对照简历，你能补一个可核验的细节吗？",
+          questionId: rt.question.id,
+          followUpCount: rt.followUpCount,
+          hintCount: rt.hintCount,
+          reframeCount: rt.reframeCount,
+          signals: { ...signals, resumeConflictSeverity: "challenge" },
+          pendingTags,
+          verbatim: true,
+        };
+      }
+
+      const escalate =
+        analysis.severity === "integrity" ||
+        (alreadyChallenged && (level === 1 || level === 3));
+
+      if (escalate) {
+        signals.resumeConflictSeverity = "integrity";
+        signals.integrityBreach = true;
+        pendingTags.push("role_mismatch_suspected");
+        if (record) {
+          record.explainOutcome = "chaotic_integrity_risk";
+          session.resumeConflicts = [...(session.resumeConflicts || []), record];
+        }
+        if (pendingTags.length) rt.tags = Array.from(new Set([...rt.tags, ...pendingTags]));
+        return {
+          action: "FINISH",
+          utterance: INTEGRITY_END_UTTERANCE,
+          questionId: rt.question.id,
+          followUpCount: rt.followUpCount,
+          hintCount: rt.hintCount,
+          reframeCount: rt.reframeCount,
+          signals,
+          pendingTags,
+          done: true,
+          verbatim: true,
+        };
+      }
+
+      // 首次挑战：挂起等待解释；专业语气，不说造假
       signals.resumeConflictSeverity = "challenge";
       rt.resumeConflictProbeCount += 1;
       rt.followUpCount += 1;
       session.authenticityChallengeCount = (session.authenticityChallengeCount || 0) + 1;
+      if (record) {
+        session.pendingConflictChallenge = record;
+      }
       return {
         action: "FOLLOW_UP_OWNERSHIP",
         utterance:
           analysis.utterance ||
           (analysis.resumeSide && analysis.answerSide
             ? craftResumeConflictUtterance({
-                kind: (analysis.kind as "ownership") || "ownership",
+                kind: analysis.kind || "other",
+                level,
                 resumeSide: analysis.resumeSide,
                 answerSide: analysis.answerSide,
+                resumeExcerpt: analysis.resumeExcerpt,
               })
             : RESUME_CONFLICT_GENERIC_UTTERANCE),
         questionId: rt.question.id,

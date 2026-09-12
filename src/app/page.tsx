@@ -79,6 +79,8 @@ export default function HomePage() {
         candidateName: (data.candidateName as string) || current.name || "",
         answerSoftLimitSec: data.answerSoftLimitSec as number | undefined,
         answerHardLimitSec: data.answerHardLimitSec as number | undefined,
+        phase: data.phase as string | undefined,
+        codingProblem: data.question?.isCoding ? data.question : undefined,
       };
       try {
         sessionStorage.setItem(`interview:${boot.sessionId}`, JSON.stringify(boot));

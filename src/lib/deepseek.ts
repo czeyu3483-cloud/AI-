@@ -16,6 +16,7 @@ import {
   craftResumeConflictUtterance,
   detectResumeConflict,
   heuristicToAnalysis,
+  levelForKind,
   resumeJsonForConsistency,
   shouldAnalyzeResumeConsistency,
 } from "./resumeConflict";
@@ -25,11 +26,15 @@ import type {
   FeedbackBand,
   FeedbackDimensionScore,
   FeedbackReport,
+  HireRecommendation,
   InterviewAction,
   InterviewSession,
   Question,
+  ResumeConflictKind,
+  ResumeConflictLevel,
   ResumeConsistencyAnalysis,
   ResumeProfile,
+  TechCorrectnessNote,
   TrackId,
   TurnDecision,
 } from "./types";
@@ -169,8 +174,8 @@ export async function polishUtterance(input: {
 }
 
 /**
- * 简历一致性 Agent：对比 resume JSON + 当前题 + 口述。
- * LLM 优先；失败/无 key 时回落启发式。
+ * 简历一致性 Agent：对比 resume JSON(+rawText) + 当前题 + 口述。
+ * LLM 优先；失败/无 key 时回落启发式。输出冲突等级 1–5。
  */
 export async function analyzeResumeConsistency(input: {
   answer: string;
@@ -193,18 +198,18 @@ export async function analyzeResumeConsistency(input: {
     const completion = await c.chat.completions.create({
       model: modelName(),
       temperature: 0.1,
-      max_tokens: 400,
+      max_tokens: 450,
       response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
           content:
-            "你是资深技术面试官的「简历一致性」助理。对比候选人简历 JSON 与口述回答。" +
-            "若简历写项目 A 做了 B，但口述声称完全不同的职责/技术/指标/所有权（不同 ownership），判 conflict。" +
+            "你是资深技术面试官的「简历一致性」助理。对比候选人简历（含 rawTextExcerpt）与口述。" +
+            "冲突等级 level：1直接矛盾 2角色漂移(整理材料vs沟通联络) 3贡献注水(参与→主导) 4细节模糊 5技术栈不符。" +
             "补充细节、承认不会、说没做过相邻迁移 ≠ 冲突。" +
-            "severity：none=无实质冲突；challenge=首次可质疑的不一致；integrity=明显造假/反复矛盾/所有权明显不符。" +
-            "只输出 JSON：{conflict:boolean,severity:\"none\"|\"challenge\"|\"integrity\",kind?:string,resumeSide?:string,answerSide?:string,utterance?:string}。" +
-            "utterance 须专业尖锐：质疑「你实际做了什么」，禁止嘲讽。",
+            "severity：none=无；challenge=可质疑；integrity=明显造假/反复矛盾。" +
+            "utterance 必须专业：「简历写的是A，你刚才说B，不太一样，解释一下」；禁止说「你造假」。" +
+            "只输出 JSON：{conflict,severity,level,kind,resumeSide,answerSide,utterance,resumeExcerpt}。",
         },
         {
           role: "user",
@@ -212,11 +217,13 @@ export async function analyzeResumeConsistency(input: {
             resume: resumeJsonForConsistency(resume),
             currentQuestion: question?.prompt || "",
             fromResume: Boolean(question?.fromResume),
+            phase: question?.phase || null,
             alreadyChallenged,
             answer: answer.slice(0, 1200),
             heuristicHint: heuristicHit
               ? {
                   kind: heuristicHit.kind,
+                  level: heuristicHit.level,
                   resumeSide: heuristicHit.resumeSide,
                   answerSide: heuristicHit.answerSide,
                 }
@@ -238,37 +245,46 @@ export async function analyzeResumeConsistency(input: {
       severity = conflict ? "challenge" : "none";
     }
     if (!conflict) severity = "none";
-    // 已挑战过仍冲突 → 至少 integrity
-    if (conflict && alreadyChallenged && severity === "challenge") {
+
+    const kind = String(json.kind || heuristicHit?.kind || "other") as ResumeConflictKind;
+    let level = Number(json.level) as ResumeConflictLevel;
+    if (![1, 2, 3, 4, 5].includes(level)) {
+      level = heuristicHit?.level || levelForKind(kind);
+    }
+
+    if (conflict && alreadyChallenged && (level === 1 || level === 3) && severity === "challenge") {
       severity = "integrity";
     }
     if (!conflict) {
-      // LLM 说无冲突时，若启发式强命中 ownership/project_claim 仍挑战
       if (
         heuristicHit &&
         (heuristicHit.kind === "ownership" ||
           heuristicHit.kind === "project_claim" ||
-          heuristicHit.kind === "role")
+          heuristicHit.kind === "role" ||
+          heuristicHit.kind === "role_drift" ||
+          heuristicHit.kind === "contribution_inflation" ||
+          heuristicHit.kind === "direct_contradiction")
       ) {
         return heuristic;
       }
       return { conflict: false, severity: "none", source: "llm" };
     }
-    const kind = (String(json.kind || heuristicHit?.kind || "other") as ResumeConsistencyAnalysis["kind"]);
     const resumeSide = String(json.resumeSide || heuristicHit?.resumeSide || "").slice(0, 80);
     const answerSide = String(json.answerSide || heuristicHit?.answerSide || "").slice(0, 80);
     const utterance =
       String(json.utterance || "").trim() ||
       (heuristicHit
         ? craftResumeConflictUtterance(heuristicHit)
-        : "这个点和简历写法有点不一致——你实际做了什么？");
+        : "简历写的是一边，你刚才说的是另一边，不太一样，解释一下。");
     return {
       conflict: true,
       severity,
+      level,
       kind,
       resumeSide,
       answerSide,
-      utterance: utterance.slice(0, 120),
+      utterance: utterance.slice(0, 140),
+      resumeExcerpt: String(json.resumeExcerpt || heuristicHit?.resumeExcerpt || "").slice(0, 200),
       source: "llm",
     };
   } catch {
@@ -281,7 +297,7 @@ export async function structureResume(
   source: ResumeProfile["parseMeta"]["source"],
 ): Promise<ResumeProfile> {
   const base: ResumeProfile = {
-    rawText: rawText.slice(0, 12000),
+    rawText, // 端到端保留完整原文，summarize 后也不丢
     education: [],
     skills: [],
     experiences: [],
@@ -512,6 +528,115 @@ function heuristicDimensionScores(
   });
 }
 
+function collectTechCorrectnessNotes(session: InterviewSession): TechCorrectnessNote[] {
+  const notes: TechCorrectnessNote[] = [];
+  for (const rt of session.runtimes) {
+    if (rt.question.isCoding) continue;
+    const ans = rt.userAnswers.join(" ");
+    if (!ans) continue;
+    if (rt.tags.includes("cannot_solve_after_hint")) {
+      notes.push({
+        questionId: rt.question.id,
+        note: "提示后仍未能给出可验证路径",
+        severity: "warn",
+      });
+    } else if (rt.tags.includes("answered_after_hint")) {
+      notes.push({
+        questionId: rt.question.id,
+        note: "提示后能补出关键点，独立解题偏弱",
+        severity: "info",
+      });
+    } else if (rt.answerIndependence === "independent" && ans.length > 80) {
+      notes.push({
+        questionId: rt.question.id,
+        note: "作答较独立，含一定技术细节",
+        severity: "info",
+      });
+    }
+    if (rt.tags.includes("surface_knowledge_no_practice")) {
+      notes.push({
+        questionId: rt.question.id,
+        note: "疑似表面知识，追问细节不稳",
+        severity: "warn",
+      });
+    }
+  }
+  for (const cr of session.codingResults || []) {
+    notes.push({
+      questionId: cr.problemId,
+      note: cr.passed
+        ? `编程用例全过（${cr.passedCount}/${cr.total}）${cr.complexityNotes ? `；${cr.complexityNotes}` : ""}`
+        : `编程未全过（${cr.passedCount}/${cr.total}）${cr.error ? `；${cr.error}` : ""}`,
+      severity: cr.passed ? "info" : "warn",
+    });
+  }
+  return notes.slice(0, 12);
+}
+
+function deriveRecommendation(input: {
+  integrityBreach: boolean;
+  authenticityRisk: boolean;
+  vague: boolean;
+  dimensions: FeedbackDimensionScore[];
+  codingResults?: InterviewSession["codingResults"];
+  resumeConflicts?: InterviewSession["resumeConflicts"];
+}): HireRecommendation {
+  if (input.integrityBreach) return "不推荐";
+  const hasL1 = (input.resumeConflicts || []).some((c) => c.level === 1);
+  const chaotic = (input.resumeConflicts || []).some(
+    (c) => c.explainOutcome === "chaotic_integrity_risk",
+  );
+  if (hasL1 && chaotic) return "不推荐";
+
+  const scored = input.dimensions.filter((d) => !/诚信/.test(d.dimension));
+  const avg =
+    scored.reduce((s, d) => s + d.score, 0) / Math.max(1, scored.length);
+  const codingOk = (input.codingResults || []).some((c) => c.passed);
+  const codingFail =
+    (input.codingResults || []).length > 0 &&
+    (input.codingResults || []).every((c) => !c.passed);
+
+  if (input.authenticityRisk && avg < 3) return "不推荐";
+  if (avg >= 3.6 && !input.vague && (codingOk || !(input.codingResults || []).length)) {
+    return "推荐通过";
+  }
+  if (avg >= 3 && !hasL1 && !codingFail) return "推荐通过";
+  if (avg <= 2 || (input.vague && avg < 2.8)) return "不推荐";
+  return "保留待定";
+}
+
+function buildNextRoundAdvice(input: {
+  trackId: TrackId;
+  integrityBreach: boolean;
+  authenticityRisk: boolean;
+  vague: boolean;
+  codingResults?: InterviewSession["codingResults"];
+  recommendation: HireRecommendation;
+}): string[] {
+  const tips: string[] = [];
+  if (input.integrityBreach) {
+    tips.push("先重写简历，删除无法深挖的经历，再约下一轮");
+  }
+  if (input.authenticityRisk) {
+    tips.push("对齐简历与口述：指标、技术栈、职责以可复盘事实为准");
+  }
+  if (input.vague) {
+    tips.push("每题准备「我做了什么 / 场景 / 怎么验证」三句话，避免空泛");
+  }
+  if ((input.codingResults || []).some((c) => !c.passed)) {
+    tips.push("补一道同类型手写题，并口述时间/空间复杂度");
+  }
+  if (input.trackId === "hr_final") {
+    tips.push("准备 2 个协作冲突小故事与「为什么研发」证据链");
+  } else {
+    tips.push("下一轮优先深挖一个项目的模块边界、失败方案与指标前后对比");
+  }
+  if (input.recommendation === "推荐通过") {
+    tips.push("保持项目故事稳定，下一轮可主动抛边界与失效场景");
+  }
+  return tips.slice(0, 5);
+}
+
 export async function generateFeedback(session: InterviewSession): Promise<FeedbackReport> {
   const trackId = session.trackId || "biz";
   const level = session.candidateLevel || DEFAULT_CANDIDATE_LEVEL;
@@ -520,6 +645,19 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
   const integrityBreach = detectIntegrityBreach(session);
   const trackLabel = TRACK_FOCUS[trackId].label;
   const levelLabel = CANDIDATE_LEVEL_LABEL[level];
+  const resumeConflicts = [...(session.resumeConflicts || [])];
+  const codingResults = [...(session.codingResults || [])];
+  const techCorrectnessNotes = collectTechCorrectnessNotes(session);
+  const resumeRawExcerpt = (session.resume?.rawText || "").slice(0, 1200);
+  const integrityRiskFlag =
+    integrityBreach ||
+    authenticityRisk ||
+    resumeConflicts.some(
+      (c) =>
+        c.level <= 2 ||
+        c.explainOutcome === "chaotic_integrity_risk" ||
+        c.explainOutcome === "admits_fabricate",
+    );
 
   const baseSummary = integrityBreach
     ? `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}），因简历/经历诚信问题提前结束。` +
@@ -527,7 +665,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
       `以下仍给出各能力维度评分供复盘（诚信维单独标为严重）；本报告不做录用结论。`
     : trackId === "hr_final"
       ? `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}）。整体完成了主流程；建议用具体协作场景、动机证据与上手计划证明适配度。本报告不做录用结论。`
-      : `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}）。整体完成了主流程；建议继续用项目细节、取舍与边界证明实践深度。本报告不做录用结论。`;
+      : `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}）。按简历调研→深挖→专业题→编程推进；建议继续用项目细节、取舍与边界证明实践深度。本报告不做录用结论。`;
 
   let dimensions = heuristicDimensionScores(
     session,
@@ -543,10 +681,34 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
     authenticityRisk,
   );
 
+  const recommendation = deriveRecommendation({
+    integrityBreach,
+    authenticityRisk,
+    vague,
+    dimensions,
+    codingResults,
+    resumeConflicts,
+  });
+  const nextRoundAdvice = buildNextRoundAdvice({
+    trackId,
+    integrityBreach,
+    authenticityRisk,
+    vague,
+    codingResults,
+    recommendation,
+  });
+
+  const conflictSummary =
+    resumeConflicts.length > 0
+      ? ` 简历冲突 ${resumeConflicts.length} 条（等级 ${resumeConflicts
+          .map((c) => c.level)
+          .join("/")}）。`
+      : "";
+
   const fallback: FeedbackReport = {
     overallSummary: ensureIntegritySummary(
       ensureAuthenticityFeedbackText(
-        ensureVagueFeedbackText(baseSummary, vague),
+        ensureVagueFeedbackText(baseSummary + conflictSummary, vague),
         authenticityRisk || integrityBreach,
       ),
       integrityBreach,
@@ -602,6 +764,13 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
     vagueInsufficientDetail: vague || undefined,
     authenticityRisk: authenticityRisk || integrityBreach || undefined,
     integritySevere: integrityBreach || undefined,
+    recommendation,
+    nextRoundAdvice,
+    integrityRiskFlag: integrityRiskFlag || undefined,
+    resumeConflicts,
+    techCorrectnessNotes,
+    codingResults,
+    resumeRawExcerpt: resumeRawExcerpt || undefined,
   };
 
   if (vague && !integrityBreach) {
@@ -623,14 +792,14 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
     const completion = await c.chat.completions.create({
       model: modelName(),
       temperature: 0.3,
-      max_tokens: 1600,
+      max_tokens: 1800,
       response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
           content:
-            "输出复盘 JSON：{overallSummary, perQuestion:[{questionId,prompt,userAnswer,scores:[{dimension,score,evidence}],tags,improvements}],dimensions:[{dimension,score,band,weight,evidence}],topActions}。" +
-            "分数1-5；band 为 强/中/弱/风险/严重（严重仅用于诚信维）。不要宣判通过/不通过。不要 markdown。" +
+            "输出复盘 JSON：{overallSummary,recommendation:\"推荐通过\"|\"保留待定\"|\"不推荐\",nextRoundAdvice:string[],perQuestion:[{questionId,prompt,userAnswer,scores:[{dimension,score,evidence}],tags,improvements}],dimensions:[{dimension,score,band,weight,evidence}],topActions,techCorrectnessNotes:[{questionId,note,severity}]}。" +
+            "分数1-5；band 为 强/中/弱/风险/严重（严重仅用于诚信维）。不要宣判录用，但必须给 recommendation 练习建议。" +
             "即使诚信失败也必须给各维度分数，禁止只写结束语。" +
             feedbackPolicyBlock({
               trackId,
@@ -651,9 +820,20 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
             vagueInsufficientDetail: vague,
             authenticityRisk,
             integrityBreach,
+            resumeConflicts,
+            codingResults: codingResults.map((cr) => ({
+              problemId: cr.problemId,
+              title: cr.title,
+              passed: cr.passed,
+              passedCount: cr.passedCount,
+              total: cr.total,
+              complexityNotes: cr.complexityNotes,
+            })),
+            resumeRawExcerpt: resumeRawExcerpt.slice(0, 600),
             dimensionWeights: TRACK_DIMENSION_WEIGHTS[trackId],
             items: session.runtimes.map((rt) => ({
               questionId: rt.question.id,
+              phase: rt.question.phase,
               prompt: rt.question.prompt,
               intent: rt.question.intent,
               rubrics: rt.question.rubrics,
@@ -692,6 +872,26 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
         })
       : dimensions;
     dims = applyIntegrityDimension(dims, trackId, integrityBreach, authenticityRisk);
+
+    const recRaw = String(json.recommendation || recommendation);
+    const rec = (
+      ["推荐通过", "保留待定", "不推荐"].includes(recRaw) ? recRaw : recommendation
+    ) as HireRecommendation;
+
+    const advice = Array.isArray(json.nextRoundAdvice)
+      ? (json.nextRoundAdvice as unknown[]).map(String).slice(0, 5)
+      : nextRoundAdvice;
+
+    const techNotes = Array.isArray(json.techCorrectnessNotes)
+      ? (json.techCorrectnessNotes as Array<Record<string, unknown>>).map((n) => ({
+          questionId: n.questionId ? String(n.questionId) : undefined,
+          note: String(n.note || ""),
+          severity: (["info", "warn", "error"].includes(String(n.severity))
+            ? String(n.severity)
+            : "info") as TechCorrectnessNote["severity"],
+        }))
+      : techCorrectnessNotes;
+
     return {
       overallSummary: ensureIntegritySummary(
         ensureAuthenticityFeedbackText(
@@ -714,6 +914,13 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
       vagueInsufficientDetail: vague || undefined,
       authenticityRisk: authenticityRisk || integrityBreach || undefined,
       integritySevere: integrityBreach || undefined,
+      recommendation: integrityBreach ? "不推荐" : rec,
+      nextRoundAdvice: advice,
+      integrityRiskFlag: integrityRiskFlag || undefined,
+      resumeConflicts,
+      techCorrectnessNotes: techNotes,
+      codingResults,
+      resumeRawExcerpt: resumeRawExcerpt || undefined,
     };
   } catch {
     return fallback;

@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { jsPDF } from "jspdf";
+import { conflictLevelLabel } from "@/lib/resumeConflict";
 import { getSession } from "@/lib/store";
+import type { ResumeConflictLevel } from "@/lib/types";
 
 export const runtime = "nodejs";
 
@@ -30,6 +32,7 @@ export async function GET(
     y += 2;
   };
 
+  const fb = session.feedback;
   const trackLabel = session.trackId === "hr_final" ? "HR Final" : "Biz";
   write(`Mock Interview Report - R&D ${trackLabel}`, 16);
   write(`Session: ${session.id}`);
@@ -37,21 +40,44 @@ export async function GET(
   write(
     `Role: rd_general | Track: ${session.trackId || "biz"} | Style: pressure`,
   );
-  if (session.feedback.vagueInsufficientDetail) {
+  if (fb.recommendation) write(`Recommendation: ${fb.recommendation}`);
+  if (fb.integrityRiskFlag) write("Integrity risk flag: YES");
+  if (fb.vagueInsufficientDetail) {
     write("Note: answers were not detailed enough (vague / insufficient detail).");
   }
   write("Overall:");
-  write(session.feedback.overallSummary);
-  if (session.feedback.integrityBreach) {
+  write(fb.overallSummary);
+  if (fb.integrityBreach) {
     write("Integrity: SEVERE — resume authenticity red line.");
   }
-  if (session.feedback.dimensions?.length) {
+  if (fb.resumeConflicts?.length) {
+    write("Resume conflicts:");
+    for (const c of fb.resumeConflicts) {
+      write(
+        `- L${c.level} ${conflictLevelLabel(c.level as ResumeConflictLevel)} [${c.kind}] resume="${c.resumeSide}" answer="${c.answerSide}" outcome=${c.explainOutcome || "—"}`,
+      );
+      if (c.resumeExcerpt) write(`  excerpt: ${c.resumeExcerpt}`);
+    }
+  }
+  if (fb.techCorrectnessNotes?.length) {
+    write("Tech correctness:");
+    for (const n of fb.techCorrectnessNotes) write(`- [${n.severity}] ${n.note}`);
+  }
+  if (fb.codingResults?.length) {
+    write("Coding:");
+    for (const cr of fb.codingResults) {
+      write(
+        `- ${cr.title}: ${cr.passed ? "PASS" : "FAIL"} ${cr.passedCount}/${cr.total}; ${cr.complexityNotes || ""}`,
+      );
+    }
+  }
+  if (fb.dimensions?.length) {
     write("Dimensions:");
-    for (const d of session.feedback.dimensions) {
+    for (const d of fb.dimensions) {
       write(`- ${d.dimension}: ${d.score}/5 (${d.band}) ${d.evidence || ""}`);
     }
   }
-  for (const q of session.feedback.perQuestion) {
+  for (const q of fb.perQuestion) {
     write(`Q: ${q.prompt}`);
     write(`A: ${q.userAnswer}`);
     for (const s of q.scores || []) {
@@ -59,8 +85,16 @@ export async function GET(
     }
     if (q.improvements?.length) write(`Improve: ${q.improvements.join("; ")}`);
   }
+  if (fb.nextRoundAdvice?.length) {
+    write("Next-round advice:");
+    for (const a of fb.nextRoundAdvice) write(`- ${a}`);
+  }
   write("Next actions:");
-  for (const a of session.feedback.topActions || []) write(`- ${a}`);
+  for (const a of fb.topActions || []) write(`- ${a}`);
+  if (fb.resumeRawExcerpt) {
+    write("Resume raw excerpt:");
+    write(fb.resumeRawExcerpt);
+  }
   write("Disclaimer: practice only, no hiring decision.");
 
   const buf = doc.output("arraybuffer");

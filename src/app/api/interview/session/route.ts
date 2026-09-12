@@ -35,5 +35,11 @@ export async function GET(req: Request) {
     candidateName: session.resume?.name || null,
     answerSoftLimitSec: limits.answerSoftLimitSec,
     answerHardLimitSec: limits.answerHardLimitSec,
+    phase: session.currentPhase || question?.phase || null,
+    codingProblem: question?.isCoding
+      ? (await import("@/lib/codingProblems")).getCodingProblem(
+          question.codingProblemId || "",
+        ) || null
+      : null,
   });
 }

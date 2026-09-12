@@ -58,17 +58,55 @@ export type ResumeProfile = {
   parseMeta: { source: "paste" | "txt" | "docx" | "pdf"; warnings: string[] };
 };
 
+/** 业务面显式阶段（约 30–40 分钟体感） */
+export type InterviewPhase =
+  | "resume_research"
+  | "resume_deep_dive"
+  | "professional_knowledge"
+  | "coding"
+  | "hr_fit";
+
+/** 简历冲突等级 1–5（分析 + decideTurn + 复盘共用） */
+export type ResumeConflictLevel = 1 | 2 | 3 | 4 | 5;
+
+export type ResumeConflictKind =
+  | "direct_contradiction"
+  | "role_drift"
+  | "contribution_inflation"
+  | "fuzzy_detail"
+  | "stack_mismatch"
+  | "stack"
+  | "metric"
+  | "ownership"
+  | "project_claim"
+  | "role"
+  | "timeline"
+  | "other";
+
+/** 候选人对冲突挑战的解释归类 */
+export type ConflictExplainOutcome =
+  | "ok_incomplete_resume"
+  | "chaotic_integrity_risk"
+  | "memory_fuzzy"
+  | "admits_fabricate"
+  | "pending";
+
 export type Question = {
   id: string;
   roleId: RoleId;
   /** 所属轨道；缺省视为业务面 */
   trackId?: TrackId;
+  /** 显式面试阶段 */
+  phase?: InterviewPhase;
   prompt: string;
   intent: string;
   followUpHints: string[];
   rubrics: Array<{ dimension: string; weight: number; good: string; poor: string }>;
   referencePoints: string[];
   fromResume?: boolean;
+  /** 编程题：跳过语音主路径，走编辑器提交 */
+  isCoding?: boolean;
+  codingProblemId?: string;
 };
 
 export type BehaviorConfig = {
@@ -123,6 +161,10 @@ export type TurnSignals = {
   resumeConflict?: boolean;
   /** 简历一致性分析：挑战 / 升级诚信结束 */
   resumeConflictSeverity?: "challenge" | "integrity";
+  /** 冲突等级 1–5 */
+  resumeConflictLevel?: ResumeConflictLevel;
+  /** 冲突解释归类 */
+  conflictExplainOutcome?: ConflictExplainOutcome;
 };
 
 export type QuestionRuntime = {
@@ -161,6 +203,58 @@ export type FeedbackDimensionScore = {
   evidence: string;
 };
 
+export type HireRecommendation = "推荐通过" | "保留待定" | "不推荐";
+
+export type ResumeConflictRecord = {
+  level: ResumeConflictLevel;
+  kind: ResumeConflictKind;
+  resumeSide: string;
+  answerSide: string;
+  questionId?: string;
+  utterance?: string;
+  /** 挑战后解释归类 */
+  explainOutcome?: ConflictExplainOutcome;
+  /** 简历原文摘录（证据） */
+  resumeExcerpt?: string;
+  source?: "llm" | "heuristic";
+};
+
+export type CodingTestCase = {
+  name: string;
+  args: unknown[];
+  expected: unknown;
+};
+
+export type CodingProblem = {
+  id: string;
+  title: string;
+  prompt: string;
+  starterCode: string;
+  language: "javascript" | "typescript";
+  tests: CodingTestCase[];
+  complexityHint?: string;
+};
+
+export type CodingRunResult = {
+  problemId: string;
+  title: string;
+  code: string;
+  passed: boolean;
+  total: number;
+  passedCount: number;
+  failedTests: Array<{ name: string; expected: unknown; actual: unknown }>;
+  complexityNotes?: string;
+  error?: string;
+  durationMs?: number;
+  ranAt: string;
+};
+
+export type TechCorrectnessNote = {
+  questionId?: string;
+  note: string;
+  severity: "info" | "warn" | "error";
+};
+
 export type FeedbackReport = {
   overallSummary: string;
   perQuestion: Array<{
@@ -186,6 +280,20 @@ export type FeedbackReport = {
   authenticityRisk?: boolean;
   /** 诚信维度已单独标为严重/风险 */
   integritySevere?: boolean;
+  /** 推荐通过 / 保留待定 / 不推荐（练习建议，非录用） */
+  recommendation?: HireRecommendation;
+  /** 下一轮准备建议 */
+  nextRoundAdvice?: string[];
+  /** 诚信风险旗标（含未到红线的风险） */
+  integrityRiskFlag?: boolean;
+  /** 简历冲突清单（含等级与证据） */
+  resumeConflicts?: ResumeConflictRecord[];
+  /** 技术正确性备注 */
+  techCorrectnessNotes?: TechCorrectnessNote[];
+  /** 编程环节跑测结果 */
+  codingResults?: CodingRunResult[];
+  /** 简历原文摘录（端到端保留，供证据） */
+  resumeRawExcerpt?: string;
 };
 
 export type InterviewSession = {
@@ -212,6 +320,14 @@ export type InterviewSession = {
   sessionTags?: AbilityTag[];
   /** 本场已对「口述 vs 简历」做过专业挑战的次数（≥1 后再冲突可升级诚信结束） */
   authenticityChallengeCount?: number;
+  /** 当前阶段（与 queue[current].phase 对齐） */
+  currentPhase?: InterviewPhase;
+  /** 本场累积的简历冲突记录（含等级） */
+  resumeConflicts?: ResumeConflictRecord[];
+  /** 编程题跑测记录 */
+  codingResults?: CodingRunResult[];
+  /** 待裁决的冲突挑战（等下一答解释） */
+  pendingConflictChallenge?: ResumeConflictRecord | null;
 };
 
 export type TurnDecision = {
@@ -237,10 +353,14 @@ export type ResumeConsistencyAnalysis = {
   conflict: boolean;
   /** challenge=专业质疑；integrity=反复/明显造假 → 结束 */
   severity: "none" | "challenge" | "integrity";
-  kind?: "stack" | "metric" | "ownership" | "project_claim" | "role" | "other";
+  /** 冲突等级 1–5；无冲突时可不设 */
+  level?: ResumeConflictLevel;
+  kind?: ResumeConflictKind;
   resumeSide?: string;
   answerSide?: string;
   /** 推荐挑战话术（可再润色） */
   utterance?: string;
+  /** 简历原文摘录证据 */
+  resumeExcerpt?: string;
   source: "llm" | "heuristic";
 };

@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import type { FeedbackReport } from "@/lib/types";
+import { conflictLevelLabel } from "@/lib/resumeConflict";
+import type { FeedbackReport, ResumeConflictLevel } from "@/lib/types";
 
 export default function FeedbackPage() {
   const params = useParams<{ id: string }>();
@@ -51,6 +52,16 @@ export default function FeedbackPage() {
 
       {feedback && (
         <>
+          {feedback.recommendation ? (
+            <section className="rounded-2xl border border-[var(--line)] bg-[var(--card)]/80 p-5">
+              <h2 className="mb-2 text-lg font-medium">综合建议</h2>
+              <p className="text-xl font-semibold text-[var(--accent)]">{feedback.recommendation}</p>
+              {feedback.integrityRiskFlag ? (
+                <p className="mt-2 text-sm text-[var(--danger)]">诚信风险旗标：已触发（含未到红线的风险项）</p>
+              ) : null}
+            </section>
+          ) : null}
+
           {feedback.integrityBreach ? (
             <section className="rounded-2xl border border-[var(--danger)]/50 bg-[var(--danger)]/10 p-5">
               <h2 className="mb-2 text-lg font-medium text-[var(--danger)]">
@@ -78,6 +89,62 @@ export default function FeedbackPage() {
               <p className="leading-7 text-[var(--muted)]">
                 本场存在口述与简历不一致之处。请对齐指标、技术栈与职责表述，只保留可复盘的亲历细节。
               </p>
+            </section>
+          ) : null}
+
+          {feedback.resumeConflicts && feedback.resumeConflicts.length > 0 ? (
+            <section className="rounded-2xl border border-[var(--line)] bg-[var(--card)]/80 p-5">
+              <h2 className="mb-3 text-lg font-medium">简历冲突（等级 1–5）</h2>
+              <ul className="space-y-3 text-sm">
+                {feedback.resumeConflicts.map((c, i) => (
+                  <li key={`${c.kind}-${i}`} className="border-b border-[var(--line)]/60 pb-3 last:border-0">
+                    <p className="font-medium">
+                      L{c.level} · {conflictLevelLabel(c.level as ResumeConflictLevel)} · {c.kind}
+                    </p>
+                    <p className="mt-1 text-[var(--muted)]">
+                      简历：{c.resumeSide} ／ 口述：{c.answerSide}
+                    </p>
+                    {c.resumeExcerpt ? (
+                      <p className="mt-1 text-xs text-[var(--muted)]">证据摘录：{c.resumeExcerpt}</p>
+                    ) : null}
+                    {c.explainOutcome ? (
+                      <p className="mt-1 text-xs text-[var(--accent-2)]">解释归类：{c.explainOutcome}</p>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
+          {feedback.techCorrectnessNotes && feedback.techCorrectnessNotes.length > 0 ? (
+            <section className="rounded-2xl border border-[var(--line)] bg-[var(--card)]/80 p-5">
+              <h2 className="mb-3 text-lg font-medium">技术正确性备注</h2>
+              <ul className="list-disc space-y-1 pl-5 text-sm text-[var(--muted)]">
+                {feedback.techCorrectnessNotes.map((n, i) => (
+                  <li key={`${n.note}-${i}`}>
+                    [{n.severity}] {n.note}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
+          {feedback.codingResults && feedback.codingResults.length > 0 ? (
+            <section className="rounded-2xl border border-[var(--line)] bg-[var(--card)]/80 p-5">
+              <h2 className="mb-3 text-lg font-medium">编程跑测</h2>
+              <ul className="space-y-3 text-sm">
+                {feedback.codingResults.map((cr) => (
+                  <li key={`${cr.problemId}-${cr.ranAt}`}>
+                    <p className="font-medium">
+                      {cr.title}：{cr.passed ? "通过" : "未全过"}（{cr.passedCount}/{cr.total}）
+                    </p>
+                    {cr.complexityNotes ? (
+                      <p className="text-[var(--muted)]">复杂度备注：{cr.complexityNotes}</p>
+                    ) : null}
+                    {cr.error ? <p className="text-[var(--danger)]">{cr.error}</p> : null}
+                  </li>
+                ))}
+              </ul>
             </section>
           ) : null}
 
@@ -138,6 +205,17 @@ export default function FeedbackPage() {
             ))}
           </section>
 
+          {feedback.nextRoundAdvice && feedback.nextRoundAdvice.length > 0 ? (
+            <section className="rounded-2xl border border-[var(--line)] bg-[var(--card)]/80 p-5">
+              <h2 className="mb-2 text-lg font-medium">下一轮建议</h2>
+              <ul className="list-disc space-y-1 pl-5 text-[var(--muted)]">
+                {feedback.nextRoundAdvice.map((a) => (
+                  <li key={a}>{a}</li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+
           <section className="rounded-2xl border border-[var(--line)] bg-[var(--card)]/80 p-5">
             <h2 className="mb-2 text-lg font-medium">下一步行动</h2>
             <ul className="list-disc space-y-1 pl-5 text-[var(--muted)]">
@@ -146,6 +224,15 @@ export default function FeedbackPage() {
               ))}
             </ul>
           </section>
+
+          {feedback.resumeRawExcerpt ? (
+            <section className="rounded-2xl border border-[var(--line)] bg-[var(--card)]/80 p-5">
+              <h2 className="mb-2 text-lg font-medium">简历原文摘录</h2>
+              <pre className="whitespace-pre-wrap text-xs leading-5 text-[var(--muted)]">
+                {feedback.resumeRawExcerpt}
+              </pre>
+            </section>
+          ) : null}
 
           <div className="flex flex-wrap gap-3">
             <a
