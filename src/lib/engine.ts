@@ -160,7 +160,7 @@ export function decideTurn(input: {
   const pendingTags: AbilityTag[] = [];
   if (input.answer.trim()) rt.userAnswers.push(input.answer.trim());
 
-  // 固定反应库优先：命中则原样回复（约 100 条；诚信类可直接结束）
+  // 固定反应库优先：命中则原样回复（生产仅 1–30；诚信类可直接结束）
   const bankHit = matchReplyBank(input.answer, { hintCount: rt.hintCount });
   if (bankHit) {
     signals.replyBankId = bankHit.id;

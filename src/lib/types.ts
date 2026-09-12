@@ -82,7 +82,7 @@ export type TurnSignals = {
   tooShort?: boolean;
   /** 主动承认简历/项目造假或乱写 */
   integrityBreach?: boolean;
-  /** 命中 replyBank 条目 id（1–100） */
+  /** 命中 replyBank 条目 id（生产仅 1–30；31–100 待用户提供后再补） */
   replyBankId?: number;
 };
 
