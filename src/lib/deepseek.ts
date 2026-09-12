@@ -252,8 +252,10 @@ export async function analyzeResumeConsistency(input: {
       level = heuristicHit?.level || levelForKind(kind);
     }
 
+    // 已挑战过仍冲突 → 仅当本题内硬冲突才 integrity（由引擎再判）
     if (conflict && alreadyChallenged && (level === 1 || level === 3) && severity === "challenge") {
-      severity = "integrity";
+      // 保留 challenge，交给引擎按 resumeConflictProbeCount 决定是否结束
+      severity = "challenge";
     }
     if (!conflict) {
       if (
@@ -263,11 +265,24 @@ export async function analyzeResumeConsistency(input: {
           heuristicHit.kind === "role" ||
           heuristicHit.kind === "role_drift" ||
           heuristicHit.kind === "contribution_inflation" ||
-          heuristicHit.kind === "direct_contradiction")
+          heuristicHit.kind === "direct_contradiction" ||
+          heuristicHit.kind === "stack_mismatch")
       ) {
         return heuristic;
       }
       return { conflict: false, severity: "none", source: "llm" };
+    }
+    // LLM 判冲突但启发式无命中：仅保留栈/指标等硬冲突，避免职责表述误伤
+    if (!heuristicHit) {
+      const hard = new Set([
+        "direct_contradiction",
+        "stack_mismatch",
+        "stack",
+        "metric",
+      ]);
+      if (!hard.has(kind)) {
+        return { conflict: false, severity: "none", source: "llm" };
+      }
     }
     const resumeSide = String(json.resumeSide || heuristicHit?.resumeSide || "").slice(0, 80);
     const answerSide = String(json.answerSide || heuristicHit?.answerSide || "").slice(0, 80);

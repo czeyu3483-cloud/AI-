@@ -893,9 +893,20 @@ export function decideTurn(input: {
 
   // 口述 vs 简历冲突：按 1–5 级处理；先处理「待解释」的上一挑战
   {
-    // A) 上一轮已挑战 → 本轮归类解释
+    // A) 上一轮已挑战 → 本轮归类解释（若像新冲突陈述则跳出，改走新检测）
     if (session.pendingConflictChallenge) {
       const pending = session.pendingConflictChallenge;
+      const looksLikeFreshClaim =
+        /用的是|我们用|技术栈|换成|改成|不是\s*(React|Vue|Angular|Next)/i.test(
+          input.answer,
+        ) && !/因为|解释一下|实际(做|是)|简历(写|表述)|不完整|记不清/.test(input.answer);
+
+      if (looksLikeFreshClaim) {
+        // 上一挑战暂记为未充分解释，转入新冲突检测
+        pending.explainOutcome = "pending";
+        session.resumeConflicts = [...(session.resumeConflicts || []), pending];
+        session.pendingConflictChallenge = null;
+      } else {
       const outcome = classifyConflictExplanation(input.answer);
       signals.conflictExplainOutcome = outcome;
       signals.resumeConflict = true;
@@ -981,6 +992,7 @@ export function decideTurn(input: {
         pendingTags: pendingTags.length ? pendingTags : undefined,
         verbatim: true,
       };
+      }
     }
 
     // B) 新冲突检测
@@ -1004,6 +1016,27 @@ export function decideTurn(input: {
           resumeExcerpt: hit.resumeExcerpt,
           source: "heuristic",
         };
+      }
+    }
+    // LLM 弱冲突且启发式无命中：早期调研阶段不挂起 pending，避免误伤
+    if (
+      analysis?.conflict &&
+      analysis.source === "llm" &&
+      !detectResumeConflict(input.answer, session.resume, rt.question) &&
+      (rt.question.phase === "resume_research" || analysis.level === 4)
+    ) {
+      // 仅记风险，不挑战打断
+      if (analysis.level === 4) {
+        const record = analysisToRecord(analysis, rt.question.id);
+        if (record) {
+          record.explainOutcome = "pending";
+          session.resumeConflicts = [...(session.resumeConflicts || []), record];
+        }
+        pendingTags.push("authenticity_risk");
+        addSessionTag(session, "authenticity_risk");
+        analysis = { conflict: false, severity: "none", source: "llm" };
+      } else if ((analysis.level || 3) >= 4) {
+        analysis = { conflict: false, severity: "none", source: "llm" };
       }
     }
     if (analysis?.conflict && analysis.severity !== "none") {
@@ -1040,7 +1073,8 @@ export function decideTurn(input: {
 
       const escalate =
         analysis.severity === "integrity" ||
-        (alreadyChallenged && (level === 1 || level === 3));
+        // 仅本题已被挑战过仍出现硬冲突才升级；跨题不因历史挑战直接诚信结束
+        (rt.resumeConflictProbeCount >= 1 && (level === 1 || level === 3));
 
       if (escalate) {
         signals.resumeConflictSeverity = "integrity";

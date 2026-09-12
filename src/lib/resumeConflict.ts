@@ -243,27 +243,28 @@ export function detectResumeConflict(
     }
   }
 
-  // Level 3: 贡献注水 — 简历写「参与」，口述「主导/独立负责」
-  if (
-    /我(独立)?(主导|负责|从零搭建|一个人做完)|我是(核心|owner|负责人)/.test(text) &&
-    /参与|协助|帮忙|跟做/.test(resumeBlob) &&
-    !/主导|独立负责|负责人|核心开发/.test(
-      (resume.projects || [])
-        .map((p) => `${p.role || ""} ${(p.highlights || []).join(" ")}`)
-        .join(" "),
-    )
-  ) {
+  // Level 3: 贡献注水 — 该项目简历明确「参与/协助」，口述却「主导/独立负责」
+  {
     const proj =
       names.find((n) => nameMentioned(question?.prompt || "", n) || nameMentioned(text, n)) ||
-      names[0] ||
-      "该项目";
-    return {
-      kind: "contribution_inflation",
-      level: 3,
-      resumeSide: `${proj}（简历偏参与/协助）`,
-      answerSide: text.replace(/\s+/g, "").slice(0, 28),
-      resumeExcerpt: excerptAround(raw, proj),
-    };
+      names[0];
+    if (proj) {
+      const p = (resume.projects || []).find((x) => x.name === proj);
+      const projBlob = `${p?.role || ""} ${(p?.highlights || []).join(" ")}`;
+      const resumeSoft = /参与|协助|帮忙|跟做|打杂/.test(projBlob);
+      const resumeLead = /主导|独立负责|负责人|核心开发|owner/i.test(projBlob);
+      const answerLead =
+        /我(独立)?(主导|从零搭建|一个人做完)|我是(核心|owner|负责人)|我独立负责/.test(text);
+      if (resumeSoft && !resumeLead && answerLead) {
+        return {
+          kind: "contribution_inflation",
+          level: 3,
+          resumeSide: `${proj}（简历偏参与/协助）`,
+          answerSide: text.replace(/\s+/g, "").slice(0, 28),
+          resumeExcerpt: excerptAround(raw, proj),
+        };
+      }
+    }
   }
 
   // Level 2 / ownership: 简历写负责，口述推给别人（角色漂移 / 弱否认）
