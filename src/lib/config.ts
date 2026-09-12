@@ -36,8 +36,8 @@ export const DEMO_TRACKS: Array<{
   {
     id: "hr_final",
     label: "HR终面",
-    hint: "简历协作切入 → 适配/动机/协作；中立不中途夸赞（Demo 暂不可选，题库与逻辑保留）",
-    enabled: false,
+    hint: "简历协作切入 → 适配/动机/协作；中立不中途夸赞",
+    enabled: true,
   },
 ];
 
