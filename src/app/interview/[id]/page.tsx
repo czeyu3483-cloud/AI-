@@ -51,7 +51,6 @@ export default function InterviewPage() {
   const [error, setError] = useState("");
   const [status, setStatus] = useState("正在加载面试会话…");
   const [index, setIndex] = useState(0);
-  const [total, setTotal] = useState(4);
   const [fallbackText, setFallbackText] = useState("");
   const [showTextFallback, setShowTextFallback] = useState(false);
   const [asrSupported, setAsrSupported] = useState(true);
@@ -365,7 +364,6 @@ export default function InterviewPage() {
       if (cancelled || !data) return;
       setBoot(data);
       setIndex(data.index);
-      setTotal(data.total);
       setInterviewerName(data.interviewerName || "王老师");
       lastUtteranceRef.current = data.utterance;
       syncCodingFromQuestion(data.question, data.codingProblem);
@@ -448,7 +446,6 @@ export default function InterviewPage() {
       if (!res.ok) throw new Error(data.error || "回合失败");
 
       if (typeof data.index === "number") setIndex(data.index);
-      if (typeof data.total === "number") setTotal(data.total);
       if (data.phase) setPhase(data.phase as InterviewPhase);
       syncCodingFromQuestion(data.question, data.codingProblem);
 
@@ -524,7 +521,6 @@ export default function InterviewPage() {
     phase?: string;
   }) {
     if (typeof payload.index === "number") setIndex(payload.index);
-    if (typeof payload.total === "number") setTotal(payload.total);
     if (payload.phase) setPhase(payload.phase as InterviewPhase);
     syncCodingFromQuestion(payload.question as Question | null);
 
@@ -812,7 +808,7 @@ export default function InterviewPage() {
     <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col items-center px-5 py-8">
       <header className="mb-6 w-full text-center">
         <p className="text-xs tracking-[0.2em] text-[var(--muted)]">语音面试</p>
-        <h1 className="mt-2 text-2xl font-semibold">和{interviewerName}聊聊</h1>
+        <h1 className="mt-2 text-2xl font-semibold">业务面 · {interviewerName}</h1>
         <p className="mt-2 text-sm text-[var(--muted)]">
           {interviewEnded
             ? "本场面试已结束"
