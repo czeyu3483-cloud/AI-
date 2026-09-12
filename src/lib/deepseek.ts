@@ -1,11 +1,26 @@
 import OpenAI from "openai";
 import { RED_FLAG_PATTERNS } from "./config";
+import {
+  CANDIDATE_LEVEL_LABEL,
+  DEFAULT_CANDIDATE_LEVEL,
+  FEEDBACK_DIMENSIONS,
+  TRACK_DIMENSION_WEIGHTS,
+  TRACK_FOCUS,
+  depthExpectation,
+  feedbackPolicyBlock,
+  polishGlobalPolicyBlock,
+  polishRoleLine,
+  scoreToBand,
+} from "./interviewerPolicy";
 import type {
   AbilityTag,
+  CandidateLevel,
+  FeedbackDimensionScore,
   FeedbackReport,
   InterviewAction,
   InterviewSession,
   ResumeProfile,
+  TrackId,
   TurnDecision,
 } from "./types";
 
@@ -64,7 +79,8 @@ export async function polishUtterance(input: {
   userAnswer?: string;
   tone: string;
   /** biz = 技术追问；hr_final = 适配/动机/协作 */
-  trackId?: "biz" | "hr_final";
+  trackId?: TrackId;
+  candidateLevel?: CandidateLevel;
   /** 诚信违规结束 / 回复库命中等：跳过润色，保留原句意图与口吻 */
   skipPolish?: boolean;
   /** 可选：命中的 replyBank 风格摘要（仅非 verbatim 时参考） */
@@ -74,16 +90,18 @@ export async function polishUtterance(input: {
   if (input.skipPolish) return { text: fallback, mocked: false };
   const c = client();
   if (!c) return { text: fallback, mocked: true };
+  const trackId = input.trackId || "biz";
+  const level = input.candidateLevel || DEFAULT_CANDIDATE_LEVEL;
   const isFollowUp = String(input.action).startsWith("FOLLOW_UP");
-  const isHr = input.trackId === "hr_final";
-  const roleLine = isHr
-    ? "你是大厂研发岗 HR 终面面试官（不是 AI、不是模拟器）。口语自然温和。关注适配性、动机、协作、抗压与职业规划；少挖硬核算法/架构细节。中立、一次只问一个问题或不问只控场；不暗示对错；不给标准答案；不当场宣判；不嘲讽。语气沉稳偏暖。"
-    : "你是大厂研发岗真人面试官（不是 AI、不是模拟器）。口语自然，像当面聊天。中立、一次只问一个问题或不问只控场；不暗示对错；不给标准答案；不当场宣判；不嘲讽。语气沉稳偏紧。";
+  const isHint = input.action === "HINT_DIRECTION";
+  const isHr = trackId === "hr_final";
   const followHint = isFollowUp
     ? isHr
       ? "【追问】跟住候选人上一句里的动机/协作/抗压/规划细节，禁止反复同一句「太笼统/再具体一点」；不要转成算法或架构刨根。"
       : "【追问】必须像真人一样跟住候选人上一句：抓住最新具体名词/职责（设计→问设计细节；改口说写代码/平台→追问写了什么代码、怎么写），可以改写 draft 使其更贴上一句，但禁止重复同一句「太笼统/再具体一点/太空泛」；不要忽略话题转移。"
-    : "";
+    : isHint
+      ? "【提示】只给方向不给答案；保持尊重，勿嘲讽。"
+      : "";
   try {
     const completion = await c.chat.completions.create({
       model: modelName(),
@@ -93,9 +111,9 @@ export async function polishUtterance(input: {
         {
           role: "system",
           content:
-            roleLine +
-            "禁止说出「模拟」「压力面」「AI」「数字人」等元信息。" +
-            "全局口径：薪资加班等说「这块后面 HR 会聊」；过不过/录用/内部政策说「这个面试环节不好说，我们先回到题目」；候选人要思考时间只回「好的」并等待；答太长用「那我们先看下一个问题」换题；弄虚作假则让其改扎实简历并结束。若候选人明显不会或反复空泛，简短记下并换题，不要刨根问底。只输出最终要对候选人说的一句中文。草稿已写清结束或换题意图时，请保留该意图，不要改成继续追问。若提供 bankStyle，仅作语气参考，仍以 draft 语义为准。" +
+            polishRoleLine(trackId) +
+            polishGlobalPolicyBlock() +
+            depthExpectation(level) +
             followHint,
         },
         {
@@ -103,7 +121,8 @@ export async function polishUtterance(input: {
           content: JSON.stringify({
             action: input.action,
             tone: input.tone,
-            trackId: input.trackId || "biz",
+            trackId,
+            candidateLevel: level,
             draft: input.draft,
             currentQuestion: input.questionPrompt,
             userAnswer: input.userAnswer?.slice(0, 800) ?? "",
@@ -234,6 +253,15 @@ export function detectIntegrityBreach(session: InterviewSession): boolean {
 
 function integrityFeedback(session: InterviewSession): FeedbackReport {
   const tag: AbilityTag = "role_mismatch_suspected";
+  const trackId = session.trackId || "biz";
+  const level = session.candidateLevel || DEFAULT_CANDIDATE_LEVEL;
+  const dimensions: FeedbackDimensionScore[] = FEEDBACK_DIMENSIONS.map((d) => ({
+    dimension: d.label,
+    score: 1,
+    band: "风险" as const,
+    weight: TRACK_DIMENSION_WEIGHTS[trackId][d.id],
+    evidence: "诚信红线触发，本项不予高分",
+  }));
   return {
     overallSummary:
       "本场因简历/项目经历诚信问题提前结束。候选人承认或被判定存在简历乱写、经历注水、挂名或项目造假等严重问题。" +
@@ -257,13 +285,15 @@ function integrityFeedback(session: InterviewSession): FeedbackReport {
         ],
       };
     }),
+    dimensions,
     topActions: [
       "重写简历：只保留可深挖的真实经历",
       "对每个项目准备「我做了什么 / 取舍 / 验证」三句话",
       "下次面试前自检：能否承受连续追问而不崩",
     ],
     roleId: session.roleId,
-    trackId: session.trackId || "biz",
+    trackId,
+    candidateLevel: level,
     styleResolved: session.config.styleResolved,
     integrityBreach: true,
   };
@@ -283,18 +313,65 @@ function ensureVagueFeedbackText(summary: string, vague: boolean): string {
   );
 }
 
+function heuristicDimensionScores(
+  session: InterviewSession,
+  trackId: TrackId,
+  vague: boolean,
+): FeedbackDimensionScore[] {
+  const allTags = new Set(session.runtimes.flatMap((rt) => rt.tags));
+  const answered = session.runtimes.filter((rt) => rt.userAnswers.join("").length > 40).length;
+  const total = Math.max(1, session.runtimes.length);
+  const coverage = answered / total;
+  const afterHint = allTags.has("answered_after_hint");
+  const stillCant = allTags.has("cannot_solve_after_hint");
+  const transfer = allTags.has("transfer_experience_shown");
+  const base = vague ? 2 : coverage >= 0.75 ? 3 : 2;
+
+  const scoreOf = (id: (typeof FEEDBACK_DIMENSIONS)[number]["id"]): number => {
+    let s = base;
+    if (id === "project_authenticity" && allTags.has("surface_knowledge_no_practice")) s = Math.min(s, 2);
+    if (id === "tech_depth" && trackId === "biz") {
+      if (stillCant) s = Math.min(s, 2);
+      if (afterHint) s = Math.min(s, 3);
+    }
+    if (id === "learning_potential") {
+      if (afterHint || transfer) s = Math.max(s, 3);
+      if (allTags.has("can_reason_trainable")) s = Math.max(s, 3);
+      if (stillCant) s = Math.min(s, 2);
+    }
+    if (id === "communication" && allTags.has("nervous_but_capable")) s = Math.max(s, 3);
+    if (id === "culture_fit" && trackId === "hr_final") s = Math.max(s, base);
+    return Math.max(1, Math.min(5, s));
+  };
+
+  return FEEDBACK_DIMENSIONS.map((d) => {
+    const score = scoreOf(d.id);
+    return {
+      dimension: d.label,
+      score,
+      band: scoreToBand(score),
+      weight: TRACK_DIMENSION_WEIGHTS[trackId][d.id],
+      evidence: vague ? "回答偏空泛，细节不足" : "基于本场作答与标签启发式估计",
+    };
+  });
+}
+
 export async function generateFeedback(session: InterviewSession): Promise<FeedbackReport> {
   if (detectIntegrityBreach(session)) {
     return integrityFeedback(session);
   }
 
   const trackId = session.trackId || "biz";
+  const level = session.candidateLevel || DEFAULT_CANDIDATE_LEVEL;
   const vague = sessionHasVagueTag(session);
-  const trackLabel = trackId === "hr_final" ? "HR终面" : "业务面";
+  const trackLabel = TRACK_FOCUS[trackId].label;
+  const levelLabel = CANDIDATE_LEVEL_LABEL[level];
   const baseSummary =
     trackId === "hr_final"
-      ? `本场为研发岗${trackLabel}练习。整体完成了主流程；建议用具体协作场景、动机证据与上手计划证明适配度。本报告不做录用结论。`
-      : `本场为研发岗${trackLabel}（压力面）练习。整体完成了主流程；建议继续用项目细节、取舍与边界证明实践深度。本报告不做录用结论。`;
+      ? `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}）。整体完成了主流程；建议用具体协作场景、动机证据与上手计划证明适配度。本报告不做录用结论。`
+      : `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}）。整体完成了主流程；建议继续用项目细节、取舍与边界证明实践深度。本报告不做录用结论。`;
+
+  const dimensions = heuristicDimensionScores(session, trackId, vague);
 
   const fallback: FeedbackReport = {
     overallSummary: ensureVagueFeedbackText(baseSummary, vague),
@@ -313,12 +390,14 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
           ? ["用一件具体事说明协作/动机", "讲清你当时怎么想、怎么做", "补上可验证结果或复盘"]
           : ["补充个人职责边界", "说明取舍与失效场景", "用数据或现象验证结果"],
     })),
+    dimensions,
     topActions:
       trackId === "hr_final"
         ? ["准备 2 个协作冲突小故事", "写清「为什么研发 + 为什么现在」", "列出入职前三月上手清单"]
         : ["准备量化结果的项目故事", "每题主动讲清取舍与边界", "用故障复盘练排查路径"],
     roleId: session.roleId,
     trackId,
+    candidateLevel: level,
     styleResolved: session.config.styleResolved,
     vagueInsufficientDetail: vague || undefined,
   };
@@ -336,28 +415,26 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
     const completion = await c.chat.completions.create({
       model: modelName(),
       temperature: 0.3,
-      max_tokens: 1200,
+      max_tokens: 1400,
       response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
           content:
-            "输出复盘 JSON：{overallSummary, perQuestion:[{questionId,prompt,userAnswer,scores:[{dimension,score,evidence}],tags,improvements}],topActions}。分数1-5。不要宣判通过/不通过。不要 markdown。不要评价语音流畅度/语气词/表达腔调。软跳过「不会」与诚信造假不同：若 tags 无 role_mismatch_suspected，按正常能力复盘即可。" +
-            (vague
-              ? "本场已标记 vague_insufficient_detail：overallSummary 必须明确写出候选人回答不够细致/偏空泛笼统（可用中文「回答不够细致」），并给可执行的补细节建议。"
-              : "") +
-            (trackId === "hr_final"
-              ? "本场是 HR终面：从适配性、动机、协作、抗压、职业规划评价；少谈硬核算法架构。"
-              : "本场是业务面：偏技术追问与项目细节。"),
+            "输出复盘 JSON：{overallSummary, perQuestion:[{questionId,prompt,userAnswer,scores:[{dimension,score,evidence}],tags,improvements}],dimensions:[{dimension,score,band,weight,evidence}],topActions}。" +
+            "分数1-5；band 为 强/中/弱/风险。不要宣判通过/不通过。不要 markdown。" +
+            feedbackPolicyBlock({ trackId, level, vague }),
         },
         {
           role: "user",
           content: JSON.stringify({
             roleId: session.roleId,
             trackId,
+            candidateLevel: level,
             style: session.config.styleResolved,
             sessionTags: session.sessionTags || [],
             vagueInsufficientDetail: vague,
+            dimensionWeights: TRACK_DIMENSION_WEIGHTS[trackId],
             items: session.runtimes.map((rt) => ({
               questionId: rt.question.id,
               prompt: rt.question.prompt,
@@ -365,6 +442,8 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
               rubrics: rt.question.rubrics,
               answers: rt.userAnswers,
               tags: rt.tags,
+              hintLevel: rt.hintLevel,
+              answerIndependence: rt.answerIndependence,
             })),
           }),
         },
@@ -376,15 +455,32 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
       | undefined;
     const raw = (msg?.content || msg?.reasoning_content || "").trim();
     const json = extractJsonObject(raw);
+    const dimsRaw = Array.isArray(json.dimensions) ? json.dimensions : null;
+    const dims: FeedbackDimensionScore[] = dimsRaw
+      ? (dimsRaw as Array<Record<string, unknown>>).map((d, i) => {
+          const score = Number(d.score) || dimensions[i]?.score || 2;
+          return {
+            dimension: String(d.dimension || FEEDBACK_DIMENSIONS[i]?.label || "维度"),
+            score,
+            band: (["强", "中", "弱", "风险"].includes(String(d.band))
+              ? String(d.band)
+              : scoreToBand(score)) as FeedbackDimensionScore["band"],
+            weight: Number(d.weight) || dimensions[i]?.weight || 0,
+            evidence: String(d.evidence || ""),
+          };
+        })
+      : dimensions;
     return {
       overallSummary: ensureVagueFeedbackText(
         String(json.overallSummary || fallback.overallSummary),
         vague,
       ),
       perQuestion: Array.isArray(json.perQuestion) ? json.perQuestion : fallback.perQuestion,
+      dimensions: dims,
       topActions: Array.isArray(json.topActions) ? json.topActions.slice(0, 5) : fallback.topActions,
       roleId: session.roleId,
       trackId,
+      candidateLevel: level,
       styleResolved: session.config.styleResolved,
       vagueInsufficientDetail: vague || undefined,
     };

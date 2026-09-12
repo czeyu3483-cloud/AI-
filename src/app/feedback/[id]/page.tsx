@@ -40,7 +40,9 @@ export default function FeedbackPage() {
         <h1 className="text-3xl font-semibold">面试复盘报告</h1>
         <p className="text-sm text-[var(--muted)]">
           研发岗 ·{" "}
-          {feedback?.trackId === "hr_final" ? "HR终面" : "业务面"} · 压力面 · 仅供练习参考，不代表录用结论
+          {feedback?.trackId === "hr_final" ? "HR终面" : "业务面"} ·{" "}
+          {feedback?.candidateLevel === "social" ? "社招深度" : "校招/实习深度"} ·
+          仅供练习参考，不代表录用结论
         </p>
       </header>
 
@@ -60,10 +62,32 @@ export default function FeedbackPage() {
 
           {feedback.vagueInsufficientDetail ? (
             <section className="rounded-2xl border border-[var(--accent-2)]/40 bg-[var(--accent-2)]/10 p-5">
-              <h2 className="mb-2 text-lg font-medium">细节不足</h2>
+              <h2 className="mb-2 text-lg font-medium">回答不够细致</h2>
               <p className="leading-7 text-[var(--muted)]">
                 本场多次回答偏空泛/笼统，整体回答不够细致。请用具体动作、场景与可验证结果把经历讲扎实。
               </p>
+            </section>
+          ) : null}
+
+          {feedback.dimensions?.length ? (
+            <section className="rounded-2xl border border-[var(--line)] bg-[var(--card)]/80 p-5">
+              <h2 className="mb-3 text-lg font-medium">能力维度</h2>
+              <ul className="space-y-2 text-sm">
+                {feedback.dimensions.map((d) => (
+                  <li key={d.dimension} className="flex flex-wrap items-baseline gap-2">
+                    <span className="font-medium">{d.dimension}</span>
+                    <span className="text-[var(--muted)]">
+                      {d.score}/5 · {d.band}
+                      {typeof d.weight === "number"
+                        ? ` · 权重 ${(d.weight * 100).toFixed(0)}%`
+                        : ""}
+                    </span>
+                    {d.evidence ? (
+                      <span className="w-full text-[var(--muted)]">— {d.evidence}</span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
             </section>
           ) : null}
 

@@ -13,7 +13,6 @@ export default function HomePage() {
   const [error, setError] = useState("");
   const [fileName, setFileName] = useState("");
 
-  const tracksEnabled = roleId === "rd_general";
   const canStart = useMemo(
     () =>
       roleId === "rd_general" &&
@@ -74,6 +73,7 @@ export default function HomePage() {
         total: data.total as number,
         config: data.config,
         trackId: (data.trackId as TrackId) || trackId,
+        candidateLevel: data.candidateLevel as string | undefined,
         mockedLlm: Boolean(data.mockedLlm),
         interviewerName: (data.interviewerName as string) || "王老师",
         candidateName: (data.candidateName as string) || current.name || "",
@@ -96,7 +96,7 @@ export default function HomePage() {
         <p className="text-sm tracking-[0.2em] text-[var(--accent)]">LOCAL DEMO</p>
         <h1 className="text-4xl font-semibold leading-tight md:text-5xl">仿真 AI 模拟面试官</h1>
         <p className="max-w-2xl text-[var(--muted)]">
-          面向校招/实习研发面试演练。粘贴简历后直接开始；面试官会用口语化开场，全程语音交流。
+          面向校招/实习研发面试演练（默认按校招深度预期）。选轨道后粘贴简历开始；面试官口语开场，全程语音交流。
         </p>
       </header>
 
@@ -109,10 +109,7 @@ export default function HomePage() {
                 key={role.id}
                 type="button"
                 disabled={!role.enabled}
-                onClick={() => {
-                  setRoleId(role.id);
-                  if (role.id !== "rd_general") setTrackId("biz");
-                }}
+                onClick={() => setRoleId(role.id)}
                 className={`rounded-full border px-4 py-2 text-sm transition ${
                   roleId === role.id && role.enabled
                     ? "border-[var(--accent)] bg-[var(--accent)]/15 text-[var(--accent)]"
@@ -122,35 +119,6 @@ export default function HomePage() {
                 {role.enabled ? role.label : `${role.label}（暂不可选）`}
               </button>
             ))}
-          </div>
-
-          <div className="mt-5 border-t border-[var(--line)] pt-4">
-            <h3 className="mb-2 text-sm font-medium text-[var(--muted)]">面试轨道</h3>
-            <div className="flex flex-wrap gap-2">
-              {DEMO_TRACKS.map((track) => {
-                const enabled = tracksEnabled && track.enabled;
-                return (
-                  <button
-                    key={track.id}
-                    type="button"
-                    disabled={!enabled}
-                    onClick={() => setTrackId(track.id)}
-                    className={`rounded-full border px-4 py-2 text-sm transition ${
-                      trackId === track.id && enabled
-                        ? "border-[var(--accent)] bg-[var(--accent)]/15 text-[var(--accent)]"
-                        : "border-[var(--line)] text-[var(--muted)]"
-                    }`}
-                  >
-                    {enabled ? track.label : `${track.label}（暂不可选）`}
-                  </button>
-                );
-              })}
-            </div>
-            <p className="mt-2 text-xs text-[var(--muted)]">
-              {tracksEnabled
-                ? DEMO_TRACKS.find((t) => t.id === trackId)?.hint
-                : "请先选择研发岗后再选轨道"}
-            </p>
           </div>
         </div>
 
@@ -174,11 +142,34 @@ export default function HomePage() {
             ))}
           </div>
           <p className="mt-3 text-xs text-[var(--muted)]">
-            {trackId === "hr_final"
-              ? "HR终面语气更软，少硬核算法/架构刨根；空泛回答不会无限追问。"
-              : "业务面会追问技术细节与边界；卡壳或反复空泛时换题。开场不会提「压力面」字样。"}
+            面试中会追问细节与边界；卡壳时换角度，再不行就换题。开场不会提「压力面」字样。
           </p>
         </div>
+      </section>
+
+      <section className="rounded-2xl border border-[var(--line)] bg-[var(--card)]/80 p-5">
+        <h2 className="mb-4 text-lg font-medium">面试轨道</h2>
+        <div className="flex flex-wrap gap-2">
+          {DEMO_TRACKS.map((track) => (
+            <button
+              key={track.id}
+              type="button"
+              disabled={!track.enabled || roleId !== "rd_general"}
+              onClick={() => setTrackId(track.id)}
+              className={`rounded-full border px-4 py-2 text-sm transition ${
+                trackId === track.id && track.enabled
+                  ? "border-[var(--accent)] bg-[var(--accent)]/15 text-[var(--accent)]"
+                  : "border-[var(--line)] text-[var(--muted)]"
+              }`}
+            >
+              {track.enabled ? track.label : `${track.label}（暂不可选）`}
+            </button>
+          ))}
+        </div>
+        <p className="mt-3 text-xs text-[var(--muted)]">
+          {DEMO_TRACKS.find((t) => t.id === trackId)?.hint ||
+            "业务面偏技术深挖；HR终面偏适配与动机。"}
+        </p>
       </section>
 
       <section className="rounded-2xl border border-[var(--line)] bg-[var(--card)]/80 p-5">

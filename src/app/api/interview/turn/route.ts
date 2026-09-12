@@ -56,6 +56,7 @@ export async function POST(req: Request) {
       userAnswer: body.answer,
       tone: session.config.tone,
       trackId: session.trackId || "biz",
+      candidateLevel: session.candidateLevel || "campus",
       skipPolish: Boolean(
         decision.verbatim ||
           decision.signals.integrityBreach ||

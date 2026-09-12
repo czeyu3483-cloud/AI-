@@ -5,11 +5,19 @@ import {
   assertDemoSelection,
   buildQuestionQueue,
   createRuntimes,
+  inferCandidateLevel,
   initialAskUtterance,
 } from "@/lib/engine";
 import { buildOpeningLine, pickInterviewerName } from "@/lib/persona";
 import { newSessionId, pushEvent, saveSession } from "@/lib/store";
-import type { InterviewSession, ResumeProfile, RoleId, StyleId, TrackId } from "@/lib/types";
+import type {
+  CandidateLevel,
+  InterviewSession,
+  ResumeProfile,
+  RoleId,
+  StyleId,
+  TrackId,
+} from "@/lib/types";
 
 export async function POST(req: Request) {
   try {
@@ -17,6 +25,7 @@ export async function POST(req: Request) {
       roleId?: RoleId;
       styleId?: StyleId;
       trackId?: TrackId;
+      candidateLevel?: CandidateLevel;
       resume?: ResumeProfile;
     };
     const roleId = body.roleId ?? "rd_general";
@@ -33,7 +42,13 @@ export async function POST(req: Request) {
           education: body.resume.education ?? [],
         }
       : undefined;
-    const behavior = configForTrack(trackId);
+
+    const candidateLevel: CandidateLevel =
+      body.candidateLevel === "social" || body.candidateLevel === "campus"
+        ? body.candidateLevel
+        : inferCandidateLevel(resume);
+
+    const cfg = configForTrack(trackId);
     const queue = buildQuestionQueue(resume, trackId);
     const runtimes = createRuntimes(queue);
     const interviewerName = pickInterviewerName();
@@ -48,8 +63,9 @@ export async function POST(req: Request) {
       action: "ASK",
       draft: questionDraft,
       questionPrompt: queue[0]!.prompt,
-      tone: behavior.tone,
+      tone: cfg.tone,
       trackId,
+      candidateLevel,
     });
     // 开场白保持口语模板，不交给模型改写，避免又冒出「压力面/模拟」等说法
     const utterance = `${opening}${polished.text}`;
@@ -58,7 +74,8 @@ export async function POST(req: Request) {
       id: newSessionId(),
       roleId,
       trackId,
-      config: behavior,
+      candidateLevel,
+      config: { ...cfg },
       resume,
       queue,
       currentIndex: 0,
@@ -75,6 +92,7 @@ export async function POST(req: Request) {
       roleId,
       styleId,
       trackId,
+      candidateLevel,
       mocked: polished.mocked,
       interviewerName,
     });
@@ -89,6 +107,7 @@ export async function POST(req: Request) {
       total: queue.length,
       config: session.config,
       trackId,
+      candidateLevel,
       mockedLlm: polished.mocked,
       interviewerName,
       candidateName: resume?.name || null,

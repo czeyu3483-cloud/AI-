@@ -40,11 +40,12 @@ export const PRESSURE_CONFIG: BehaviorConfig = {
   silenceStuckMs: 12000,
   maxFollowUpsPerQuestion: 3,
   maxPressurePerQuestion: 3,
-  maxHintsPerQuestion: 0,
+  /** 业务面允许 L1–L3 分级提示 */
+  maxHintsPerQuestion: 3,
   maxReframesPerQuestion: 1,
   minAnswerChars: 30,
   questionsPerSession: 4,
-  allowFirstHintOnRequest: false,
+  allowFirstHintOnRequest: true,
   answerSoftLimitSec: 70,
   answerHardLimitSec: 110,
   styleChosen: "pressure",
@@ -53,11 +54,13 @@ export const PRESSURE_CONFIG: BehaviorConfig = {
   maxVagueFollowUpsPerQuestion: 1,
 };
 
-/** HR终面：语气更软，少硬追问 */
+/** HR终面：语气更软，少硬追问；技术向提示更少 */
 export const HR_FINAL_CONFIG: BehaviorConfig = {
   ...PRESSURE_CONFIG,
   maxFollowUpsPerQuestion: 2,
   maxPressurePerQuestion: 2,
+  maxHintsPerQuestion: 1,
+  allowFirstHintOnRequest: false,
   tone: "steady_warm",
   maxVagueFollowUpsPerQuestion: 1,
 };

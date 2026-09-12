@@ -11,11 +11,19 @@ import {
   VAGUE_SOFT_SKIP_UTTERANCE,
   configForTrack,
 } from "./config";
+import {
+  FABRICATION_PROBE_UTTERANCE,
+  NOT_DONE_TRANSFER_UTTERANCE,
+  DEFAULT_CANDIDATE_LEVEL,
+  hintUtterance,
+  pickCoachLine,
+} from "./interviewerPolicy";
 import { matchReplyBank } from "./replyBank";
 import { HR_QUESTIONS } from "./questions/hr";
 import { RD_QUESTIONS } from "./questions/rd";
 import type {
   AbilityTag,
+  CandidateLevel,
   InterviewAction,
   InterviewSession,
   Question,
@@ -38,6 +46,28 @@ export function assertDemoSelection(roleId: RoleId, styleId: StyleId, trackId?: 
 
 function addSessionTag(session: InterviewSession, tag: AbilityTag) {
   session.sessionTags = Array.from(new Set([...(session.sessionTags || []), tag]));
+}
+
+/** 从简历启发式推断校招/实习 vs 社招；无信号则默认校招/实习 */
+export function inferCandidateLevel(resume?: ResumeProfile): CandidateLevel {
+  if (!resume) return DEFAULT_CANDIDATE_LEVEL;
+  const blob = [
+    resume.rawText || "",
+    resume.summary || "",
+    ...(resume.experiences || []).map((e) => `${e.org || ""} ${e.title || ""} ${e.period || ""}`),
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  const campusHit =
+    /实习|校招|应届|在读|本科|研究生|大三|大四|campus|intern|fresh graduate|应届生/.test(blob);
+  const socialHit =
+    /社招|全职|年经验|工作年限|senior|专家|负责人|带队|\d+\s*年/.test(blob) &&
+    !/实习/.test(blob);
+
+  if (campusHit && !socialHit) return "campus";
+  if (socialHit && !campusHit) return "social";
+  return DEFAULT_CANDIDATE_LEVEL;
 }
 
 export function buildQuestionQueue(
@@ -103,6 +133,9 @@ export function createRuntimes(queue: Question[]): QuestionRuntime[] {
     reframeCount: 0,
     answerRequestCount: 0,
     vagueFollowUpCount: 0,
+    coachCount: 0,
+    transferProbeCount: 0,
+    hintLevel: 0,
     userAnswers: [],
     tags: [],
   }));
@@ -239,10 +272,24 @@ export function detectSignals(answer: string, silenceStuck?: boolean): TurnSigna
   const signals: TurnSignals = {};
   if (silenceStuck || text.length === 0) signals.stuckSubtype = "cannot_solve";
   if (text.length > 0 && text.length < PRESSURE_CONFIG.minAnswerChars) signals.tooShort = true;
-  if (/不会|没学过|不熟悉|没接触过|答不上来|不知道/.test(text)) {
-    signals.stuckSubtype = /没学过|没接触过|不熟悉/.test(text) ? "not_learned" : "cannot_solve";
+
+  // 区分：不会 / 没学过 / 没做过（互不混同）
+  const notDone = /没做过|没有做过|没有实践|没实操过|纯理论|没落地过|没有相关实战/.test(text);
+  const notLearned = /没学过|没接触过|不熟悉这|这块没学/.test(text);
+  const cannotSolve = /不会|答不上来|不知道怎么|想不出来|做不出来/.test(text);
+
+  if (notDone) {
+    signals.notDoneBefore = true;
+  } else if (notLearned) {
+    signals.stuckSubtype = "not_learned";
+  } else if (cannotSolve) {
+    signals.stuckSubtype = "cannot_solve";
   }
-  if (/紧张|有点乱|组织不好/.test(text)) signals.stuckSubtype = "nervous";
+
+  if (/紧张|有点乱|组织不好|语无伦次|不知道怎么组织/.test(text)) {
+    signals.stuckSubtype = "nervous";
+    signals.needsCoach = true;
+  }
   if (/提示|告诉我答案|标准答案|直接说答案/.test(text)) signals.askedForHint = true;
   if (/跳过|下一题|不会做了|放弃/.test(text)) signals.explicitGiveUp = true;
 
@@ -253,6 +300,16 @@ export function detectSignals(answer: string, silenceStuck?: boolean): TurnSigna
     )
   ) {
     signals.integrityBreach = true;
+  }
+
+  // 未承认造假，但细节含糊可疑 → 交叉核实（不直接结束）
+  if (
+    !signals.integrityBreach &&
+    text.length > 20 &&
+    /应该是|大概是|可能是|我猜|好像是|记不清具体|差不多就|估计有/.test(text) &&
+    /(项目|简历|负责|指标|优化|上线|性能)/.test(text)
+  ) {
+    signals.fabricationSuspicion = true;
   }
 
   if (isShortThinkingRequest(text)) {
@@ -283,7 +340,11 @@ export function detectSignals(answer: string, silenceStuck?: boolean): TurnSigna
   if (text.length > 450) signals.tooLong = "timeout";
   if (detectRambling(text)) {
     signals.rambling = true;
-    if (!signals.tooLong) signals.tooLong = "timeout";
+    // 超长才直接 timebox；中等啰嗦可先教练结构化
+    if (text.length > 450) signals.tooLong = "timeout";
+    if (text.length >= 80 && text.length <= 450 && !isVagueAnswer(text)) {
+      signals.needsCoach = true;
+    }
   }
 
   if (isVagueAnswer(text)) signals.vague = true;
@@ -543,16 +604,61 @@ export function decideTurn(input: {
     };
   }
 
-  // 5) 答太长 / 跑火车：软换下一题
-  if (signals.tooLong === "timeout" || signals.rambling) {
+  // 5) 答太长：直接 timebox 换题；中等啰嗦：先教练一次再听
+  if (signals.tooLong === "timeout") {
     const decision = advance(session, "SKIP_SOFT", POLICY_RAMBLING_NEXT, signals, pendingTags);
     decision.verbatim = true;
     return decision;
+  }
+  if (signals.rambling || signals.needsCoach || signals.stuckSubtype === "nervous") {
+    if (rt.coachCount < 1 && (signals.needsCoach || signals.stuckSubtype === "nervous")) {
+      rt.coachCount += 1;
+      pendingTags.push("nervous_but_capable");
+      const coach = pickCoachLine(rt.coachCount + rt.followUpCount);
+      return {
+        action: "CONTINUE_LISTEN",
+        utterance: coach,
+        questionId: rt.question.id,
+        followUpCount: rt.followUpCount,
+        hintCount: rt.hintCount,
+        reframeCount: rt.reframeCount,
+        signals,
+        pendingTags,
+        verbatim: true,
+      };
+    }
+    if (signals.rambling) {
+      const decision = advance(session, "SKIP_SOFT", POLICY_RAMBLING_NEXT, signals, pendingTags);
+      decision.verbatim = true;
+      return decision;
+    }
   }
 
   if (signals.askedForHint) {
     rt.answerRequestCount += 1;
     pendingTags.push("weak_independent_problem_solving");
+    // 业务面：要提示时走分级提示，不直接挡回
+    if (
+      trackId === "biz" &&
+      cfg.allowFirstHintOnRequest &&
+      rt.hintCount < cfg.maxHintsPerQuestion &&
+      pressureOf(rt) < cfg.maxPressurePerQuestion
+    ) {
+      const level = Math.min(3, rt.hintCount + 1) as 1 | 2 | 3;
+      rt.hintCount += 1;
+      rt.hintLevel = level;
+      return {
+        action: "HINT_DIRECTION",
+        utterance: hintUtterance(level, trackId),
+        questionId: rt.question.id,
+        followUpCount: rt.followUpCount,
+        hintCount: rt.hintCount,
+        reframeCount: rt.reframeCount,
+        signals: { ...signals, answerRequestCount: rt.answerRequestCount },
+        pendingTags,
+        verbatim: true,
+      };
+    }
     return {
       action: "FORMULA_DEFLECT",
       utterance: "我不会直接给答案。你可以先讲你目前能想到的排查或设计思路。",
@@ -565,6 +671,49 @@ export function decideTurn(input: {
     };
   }
 
+  // 疑似编造（未承认）：交叉核实一次；承认/矛盾仍走诚信结束（上文）
+  if (
+    signals.fabricationSuspicion &&
+    rt.followUpCount < cfg.maxFollowUpsPerQuestion &&
+    pressureOf(rt) < cfg.maxPressurePerQuestion
+  ) {
+    rt.followUpCount += 1;
+    pendingTags.push("surface_knowledge_no_practice");
+    return {
+      action: "FOLLOW_UP_PITFALL",
+      utterance: FABRICATION_PROBE_UTTERANCE,
+      questionId: rt.question.id,
+      followUpCount: rt.followUpCount,
+      hintCount: rt.hintCount,
+      reframeCount: rt.reframeCount,
+      signals,
+      pendingTags,
+      verbatim: true,
+    };
+  }
+
+  // 「没做过」≠ 不会/造假：问一次相邻迁移
+  if (signals.notDoneBefore) {
+    if (rt.transferProbeCount < 1 && pressureOf(rt) < cfg.maxPressurePerQuestion) {
+      rt.transferProbeCount += 1;
+      rt.followUpCount += 1;
+      pendingTags.push("can_reason_trainable");
+      return {
+        action: "FOLLOW_UP_OWNERSHIP",
+        utterance: NOT_DONE_TRANSFER_UTTERANCE,
+        questionId: rt.question.id,
+        followUpCount: rt.followUpCount,
+        hintCount: rt.hintCount,
+        reframeCount: rt.reframeCount,
+        signals,
+        pendingTags,
+        verbatim: true,
+      };
+    }
+    pendingTags.push("knowledge_gap_not_learned");
+    return advance(session, "SKIP_SOFT", SKIP_SOFT_UTTERANCE, signals, pendingTags);
+  }
+
   const stuck =
     Boolean(input.silenceStuck) ||
     Boolean(signals.explicitGiveUp) ||
@@ -573,11 +722,72 @@ export function decideTurn(input: {
 
   if (stuck) {
     if (signals.stuckSubtype === "not_learned") pendingTags.push("knowledge_gap_not_learned");
-    if (signals.stuckSubtype === "cannot_solve") pendingTags.push("can_reason_trainable");
     if (signals.stuckSubtype === "nervous") pendingTags.push("nervous_but_capable");
 
-    // 明显答不上来：记录表现后换题，不刨根问底
+    // 明确放弃 / 沉默卡死 / 没学过：软换题，不按造假惩罚
+    if (
+      signals.explicitGiveUp ||
+      input.silenceStuck ||
+      signals.stuckSubtype === "not_learned" ||
+      !input.answer.trim()
+    ) {
+      if (rt.hintCount > 0) {
+        pendingTags.push("cannot_solve_after_hint");
+        rt.answerIndependence = "still_cant";
+      }
+      return advance(session, "SKIP_SOFT", SKIP_SOFT_UTTERANCE, signals, pendingTags);
+    }
+
+    // 「不会」：业务面给分级提示（最多 maxHints）；HR 少提示；用尽后软换题
+    if (
+      signals.stuckSubtype === "cannot_solve" &&
+      rt.hintCount < cfg.maxHintsPerQuestion &&
+      pressureOf(rt) < cfg.maxPressurePerQuestion
+    ) {
+      const level = Math.min(3, rt.hintCount + 1) as 1 | 2 | 3;
+      // HR 终面最多 L1
+      const cappedLevel = trackId === "hr_final" ? (1 as const) : level;
+      rt.hintCount += 1;
+      rt.hintLevel = cappedLevel;
+      pendingTags.push("can_reason_trainable");
+      return {
+        action: "HINT_DIRECTION",
+        utterance: hintUtterance(cappedLevel, trackId),
+        questionId: rt.question.id,
+        followUpCount: rt.followUpCount,
+        hintCount: rt.hintCount,
+        reframeCount: rt.reframeCount,
+        signals,
+        pendingTags,
+        verbatim: true,
+      };
+    }
+
+    if (rt.hintCount > 0) {
+      pendingTags.push("cannot_solve_after_hint");
+      rt.answerIndependence = "still_cant";
+    } else {
+      pendingTags.push("can_reason_trainable");
+    }
     return advance(session, "SKIP_SOFT", SKIP_SOFT_UTTERANCE, signals, pendingTags);
+  }
+
+  // 提示后若给出较完整回答 → 记 answered_after_hint（不按造假）
+  if (
+    rt.hintCount > 0 &&
+    input.answer.trim().length >= cfg.minAnswerChars &&
+    !signals.vague &&
+    rt.answerIndependence !== "still_cant"
+  ) {
+    pendingTags.push("answered_after_hint");
+    rt.answerIndependence = "after_hint";
+  } else if (
+    rt.hintCount === 0 &&
+    input.answer.trim().length >= 80 &&
+    !signals.vague &&
+    !rt.answerIndependence
+  ) {
+    rt.answerIndependence = "independent";
   }
 
   // 6) 空泛/笼统：至多 1 次短探，再软跳过（不无限 FOLLOW_UP）
@@ -644,6 +854,11 @@ export function decideTurn(input: {
       reframeCount: rt.reframeCount,
       signals,
     };
+  }
+
+  // 迁移追问后有内容 → 打标
+  if (rt.transferProbeCount > 0 && input.answer.trim().length >= 40) {
+    pendingTags.push("transfer_experience_shown");
   }
 
   return advance(session, "ASK", "", signals, pendingTags);
