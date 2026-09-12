@@ -12,7 +12,10 @@ import {
   polishRoleLine,
   scoreToBand,
 } from "./interviewerPolicy";
-import { runConsistencyCheck } from "./consistencyCheck";
+import {
+  hasImmediateChallengeConflicts,
+  runConsistencyCheck,
+} from "./consistencyCheck";
 import {
   craftResumeConflictUtterance,
   detectResumeConflict,
@@ -300,7 +303,7 @@ export async function analyzeResumeConsistency(input: {
     const raw = (msg?.content || msg?.reasoning_content || "").trim();
     if (!raw) return { ...heuristic, inconsistencies: fullCheck.conflicts };
     const json = extractJsonObject(raw);
-    const conflict = Boolean(json.conflict) || fullCheck.analysis.conflict;
+    let conflict = Boolean(json.conflict) || fullCheck.analysis.conflict;
     let severity = String(json.severity || "none") as ResumeConsistencyAnalysis["severity"];
     if (!["none", "challenge", "integrity"].includes(severity)) {
       severity = conflict ? "challenge" : "none";
@@ -311,6 +314,17 @@ export async function analyzeResumeConsistency(input: {
     let level = Number(json.level) as ResumeConflictLevel;
     if (![1, 2, 3, 4, 5].includes(level)) {
       level = heuristicHit?.level || fullCheck.analysis.level || levelForKind(kind);
+    }
+
+    // 姓名等硬冲突：启发式已命中时，禁止 LLM 降级为 level4 / none（否则引擎会跳过打断）
+    const hardFactHit = hasImmediateChallengeConflicts(fullCheck.conflicts);
+    if (hardFactHit) {
+      conflict = true;
+      if (severity === "none") severity = "challenge";
+      const factLevel = fullCheck.analysis.level || 1;
+      if (!level || level === 4 || level > factLevel) {
+        level = factLevel;
+      }
     }
 
     if (conflict && alreadyChallenged && (level === 1 || level === 3) && severity === "challenge") {
@@ -352,6 +366,7 @@ export async function analyzeResumeConsistency(input: {
       json.answerSide || heuristicHit?.answerSide || fullCheck.analysis.answerSide || "",
     ).slice(0, 80);
     const utterance =
+      (hardFactHit && fullCheck.analysis.utterance) ||
       String(json.utterance || "").trim() ||
       fullCheck.analysis.utterance ||
       (heuristicHit
@@ -361,14 +376,14 @@ export async function analyzeResumeConsistency(input: {
       conflict: true,
       severity: severity === "none" ? "challenge" : severity,
       level,
-      kind,
+      kind: hardFactHit ? fullCheck.analysis.kind || kind : kind,
       resumeSide,
       answerSide,
       utterance: utterance.slice(0, 220),
       resumeExcerpt: String(
-        json.resumeExcerpt || heuristicHit?.resumeExcerpt || "",
+        json.resumeExcerpt || heuristicHit?.resumeExcerpt || fullCheck.analysis.resumeExcerpt || "",
       ).slice(0, 200),
-      source: "llm",
+      source: hardFactHit ? "heuristic" : "llm",
       inconsistencies: fullCheck.conflicts,
     };
   } catch {
@@ -451,8 +466,20 @@ export async function structureResume(
     parseMeta: { source, warnings: [] },
   };
 
-  // 无 LLM 时的轻量启发式：从原文抽技能/项目，保证业务面阶段题能 dig 简历
+  // 无 LLM 时的轻量启发式：从原文抽姓名/技能/项目，保证一致性核查与 dig 可用
   const heuristicFill = (profile: ResumeProfile): ResumeProfile => {
+    if (!profile.name) {
+      const labeled =
+        rawText.match(/(?:姓名|名字|候选人)[：:\s]*([^\s，,。.\n]{2,8})/) ||
+        rawText.match(/(?:^|\n)\s*([\u4e00-\u9fff]{2,4})\s*(?:\n|$)/);
+      const candidate = labeled?.[1]?.replace(/\s+/g, "") || "";
+      if (
+        /^[\u4e00-\u9fff]{2,4}$/.test(candidate) &&
+        !/姓名|教育|经历|项目|技能|简历|实习|工作|大学|学院/.test(candidate)
+      ) {
+        profile.name = candidate;
+      }
+    }
     if ((profile.skills?.length || 0) === 0) {
       const skillHits = [
         "TypeScript",

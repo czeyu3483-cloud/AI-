@@ -75,16 +75,37 @@ function pushFact(facts: ExtractedFacts, field: FactField, value?: string | null
   facts[field] = uniq([...(facts[field] || []), v]);
 }
 
-/** 从口述/介绍文本抽取关键事实（启发式） */
+const NAME_STOP =
+  /你好|大家|今天|面试|负责|参与|同学|老师|来自|毕业于|目前|现在|一名|一个|应聘|应届|本科|硕士/;
+
+function looksLikePersonName(s: string): boolean {
+  const n = s.trim();
+  if (!/^[\u4e00-\u9fff]{2,4}$/.test(n)) return false;
+  if (NAME_STOP.test(n)) return false;
+  return true;
+}
+
+/** 从口述/介绍/简历原文抽取关键事实（启发式） */
 export function extractFactsFromText(text: string): ExtractedFacts {
   const facts: ExtractedFacts = {};
   const t = text.trim();
   if (!t) return facts;
 
+  // 简历标签：姓名：张三 / Name: 张三
+  const labeledName =
+    t.match(/(?:姓名|名字|候选人)[：:\s]*([^\s，,。.\n]{2,8})/) ||
+    t.match(/(?:^|\n)\s*(?:Name|NAME)\s*[:：]\s*([\u4e00-\u9fffA-Za-z·\s]{2,20})/);
+  if (labeledName?.[1] && looksLikePersonName(labeledName[1].replace(/\s+/g, ""))) {
+    pushFact(facts, "姓名", labeledName[1].replace(/\s+/g, ""));
+  }
+
+  // 口述自称：我是李四 / 我叫李四 / 大家好我是李四来自…（允许姓名后直接接动词）
   const nameClaim =
-    t.match(/(?:我(?:叫|是)|本人(?:叫|是)|候选人(?:叫|是))([\u4e00-\u9fff]{2,4})(?:[，,。.\s]|$)/) ||
+    t.match(
+      /(?:我(?:叫|是)|本人(?:叫|是)|候选人(?:叫|是))([\u4e00-\u9fff]{2,4})(?=[，,。.\s]|来自|毕业于|目前|现在|就读|在|$)/,
+    ) ||
     t.match(/^([\u4e00-\u9fff]{2,4})(?:[，,。.\s]|同学)/);
-  if (nameClaim?.[1] && !/你好|大家|今天|面试|负责|参与|同学|老师/.test(nameClaim[1])) {
+  if (nameClaim?.[1] && looksLikePersonName(nameClaim[1])) {
     pushFact(facts, "姓名", nameClaim[1]);
   }
 
@@ -399,6 +420,12 @@ export function craftConsistencyChallenge(
   if (!issues.length) {
     return pickChallengeLine("这里口径不太一致", seed);
   }
+  const nameIssue = issues.find((it) => it.field === "姓名");
+  if (nameIssue) {
+    return (
+      `等一下，简历上写的是「${nameIssue.sideA}」，但你刚才说的是「${nameIssue.sideB}」，哪个是对的？`
+    );
+  }
   if (issues.length === 1) {
     return pickChallengeLine(issues[0]!.issue, seed + issues[0]!.issue.length);
   }
@@ -407,6 +434,15 @@ export function craftConsistencyChallenge(
     .map((it, i) => `${i + 1}. ${it.issue}`)
     .join("；");
   return `等一下，我发现了几个问题需要澄清：${lines}`;
+}
+
+/** 高优先级事实冲突（姓名等）——永不只记入报告、必须立刻打断 */
+export function hasImmediateChallengeConflicts(
+  conflicts: Array<Pick<InconsistencyRecord, "severity" | "field">> | undefined,
+): boolean {
+  return (conflicts || []).some(
+    (c) => c.severity === "high" || c.severity === "medium" || c.field === "姓名",
+  );
 }
 
 export function severityToConflictLevel(severity: FactSeverity): ResumeConflictLevel {
@@ -439,7 +475,7 @@ function newId(): string {
  */
 export function runConsistencyCheck(input: ConsistencyCheckInput): ConsistencyCheckResult {
   const answer = (input.answer || "").trim();
-  if (answer.length < 6 || input.question?.isCoding) {
+  if (input.question?.isCoding) {
     return {
       conflicts: [],
       analysis: { conflict: false, severity: "none", source: "heuristic" },
@@ -453,6 +489,14 @@ export function runConsistencyCheck(input: ConsistencyCheckInput): ConsistencyCh
   }
 
   const current = extractFactsFromText(answer);
+  // 短答若已抽出姓名等硬事实仍要核；纯空话才跳过
+  const hasHardClaim = Boolean(current["姓名"]?.length || current["学校"]?.length || current["公司"]?.length);
+  if (answer.length < 6 && !hasHardClaim) {
+    return {
+      conflicts: [],
+      analysis: { conflict: false, severity: "none", source: "heuristic" },
+    };
+  }
   const resumeFacts = extractFactsFromResume(input.resume);
   const introFacts = extractFactsFromText(input.selfIntroText || "");
   const prevJoined = (input.previousAnswers || []).join("\n");

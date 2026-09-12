@@ -33,7 +33,11 @@ import {
   detectResumeConflict,
   utteranceForExplainOutcome,
 } from "./resumeConflict";
-import { appendInconsistencies, runConsistencyCheck } from "./consistencyCheck";
+import {
+  appendInconsistencies,
+  hasImmediateChallengeConflicts,
+  runConsistencyCheck,
+} from "./consistencyCheck";
 import { pickSubjectQuestion } from "./subjectQuestions";
 import {
   pickAdvancePrefix,
@@ -914,6 +918,52 @@ export function decideTurn(input: {
 
     mergeSelfIntroText(session, text);
 
+    // 姓名等高严重度冲突：即便介绍尚短，也优先立刻打断（不先走「补充」）
+    if (text && rt.resumeConflictProbeCount < 1) {
+      const earlyCheck = runConsistencyCheck({
+        answer: text,
+        resume: session.resume,
+        selfIntroText: session.selfIntroText || text,
+        previousAnswers: [],
+        question: rt.question,
+      });
+      if (
+        earlyCheck.analysis.conflict &&
+        hasImmediateChallengeConflicts(earlyCheck.conflicts)
+      ) {
+        session.inconsistencies = appendInconsistencies(
+          session.inconsistencies,
+          earlyCheck.conflicts,
+        );
+        const analysis = {
+          ...earlyCheck.analysis,
+          inconsistencies: earlyCheck.conflicts,
+          level: earlyCheck.analysis.level === 4 ? 1 : earlyCheck.analysis.level || 1,
+        };
+        signals.resumeConflict = true;
+        signals.resumeConflictLevel = analysis.level || 1;
+        pendingTags.push("authenticity_risk");
+        addSessionTag(session, "authenticity_risk");
+        const record = analysisToRecord(analysis, rt.question.id);
+        if (record) session.pendingConflictChallenge = record;
+        rt.resumeConflictProbeCount += 1;
+        rt.followUpCount += 1;
+        session.authenticityChallengeCount =
+          (session.authenticityChallengeCount || 0) + 1;
+        return {
+          action: "FOLLOW_UP_PITFALL",
+          utterance: analysis.utterance || RESUME_CONFLICT_GENERIC_UTTERANCE,
+          questionId: rt.question.id,
+          followUpCount: rt.followUpCount,
+          hintCount: rt.hintCount,
+          reframeCount: rt.reframeCount,
+          signals: { ...signals, resumeConflictSeverity: "challenge" },
+          pendingTags,
+          verbatim: true,
+        };
+      }
+    }
+
     // 不完整：最多一次补充话术；已补充过 / 静默卡死 / 二次短答 → 必须进入下一题
     if (incomplete && rt.vagueFollowUpCount < 1 && !input.silenceStuck) {
       rt.vagueFollowUpCount += 1;
@@ -932,57 +982,73 @@ export function decideTurn(input: {
 
     enrichDigsWithSelfIntro(session);
 
-    // 自我介绍 vs 简历/事实：实质性冲突时立刻打断挑战，再进入主问题
+    // 自我介绍 vs 简历/事实：姓名等高严重度冲突必须立刻打断，禁止先推进
     const introBlob = (session.selfIntroText || text || "").trim();
     if (introBlob.length >= INTRO_MIN && rt.resumeConflictProbeCount < 1) {
       const alreadyChallenged =
         (session.authenticityChallengeCount || 0) > 0 ||
         Boolean(session.pendingConflictChallenge);
       let analysis = resumeAnalysis;
-      if (!analysis || analysis.severity === "none") {
-        const check = runConsistencyCheck({
-          answer: introBlob,
-          resume: session.resume,
-          selfIntroText: introBlob,
-          previousAnswers: [],
-          question: rt.question,
-        });
-        if (check.analysis.conflict) {
-          analysis = check.analysis;
-          session.inconsistencies = appendInconsistencies(
-            session.inconsistencies,
-            check.conflicts,
-          );
-        } else {
-          const hit = detectResumeConflict(introBlob, session.resume, rt.question);
-          if (hit) {
-            analysis = {
-              conflict: true,
-              severity:
-                alreadyChallenged && (hit.level === 1 || hit.level === 3)
-                  ? "integrity"
-                  : "challenge",
-              level: hit.level,
-              kind: hit.kind,
-              resumeSide: hit.resumeSide,
-              answerSide: hit.answerSide,
-              utterance: craftResumeConflictUtterance(hit),
-              resumeExcerpt: hit.resumeExcerpt,
-              source: "heuristic",
-            };
-          }
+      // 始终再跑本地全场核查，避免 LLM 漏检/降级姓名冲突
+      const check = runConsistencyCheck({
+        answer: introBlob,
+        resume: session.resume,
+        selfIntroText: introBlob,
+        previousAnswers: [],
+        question: rt.question,
+      });
+      if (check.analysis.conflict) {
+        const preferLocal =
+          !analysis?.conflict ||
+          analysis.severity === "none" ||
+          hasImmediateChallengeConflicts(check.conflicts);
+        if (preferLocal) {
+          analysis = { ...check.analysis, inconsistencies: check.conflicts };
+        }
+        session.inconsistencies = appendInconsistencies(
+          session.inconsistencies,
+          check.conflicts,
+        );
+      } else if (!analysis || analysis.severity === "none") {
+        const hit = detectResumeConflict(introBlob, session.resume, rt.question);
+        if (hit) {
+          analysis = {
+            conflict: true,
+            severity:
+              alreadyChallenged && (hit.level === 1 || hit.level === 3)
+                ? "integrity"
+                : "challenge",
+            level: hit.level,
+            kind: hit.kind,
+            resumeSide: hit.resumeSide,
+            answerSide: hit.answerSide,
+            utterance: craftResumeConflictUtterance(hit),
+            resumeExcerpt: hit.resumeExcerpt,
+            source: "heuristic",
+          };
         }
       }
-      if (
+      const mustChallenge =
         analysis?.conflict &&
         analysis.severity !== "none" &&
-        [1, 2, 3, 5].includes(analysis.level || 3)
-      ) {
+        (hasImmediateChallengeConflicts(analysis.inconsistencies) ||
+          [1, 2, 3, 5].includes(analysis.level || 3) ||
+          // 姓名等硬冲突：即使 LLM 标成 level4 也打断
+          analysis.level === 1 ||
+          /姓名|张|李|简历上写的是/.test(analysis.utterance || ""));
+      if (mustChallenge) {
+        // 高优先级事实不得以 level4「仅记报告」放过
+        if (
+          hasImmediateChallengeConflicts(analysis!.inconsistencies) &&
+          (analysis!.level === 4 || !analysis!.level)
+        ) {
+          analysis = { ...analysis!, level: 1 };
+        }
         signals.resumeConflict = true;
-        signals.resumeConflictLevel = analysis.level || 3;
+        signals.resumeConflictLevel = analysis!.level || 1;
         pendingTags.push("authenticity_risk");
         addSessionTag(session, "authenticity_risk");
-        const record = analysisToRecord(analysis, rt.question.id);
+        const record = analysisToRecord(analysis!, rt.question.id);
         if (record) {
           session.pendingConflictChallenge = record;
         }
@@ -993,7 +1059,7 @@ export function decideTurn(input: {
         return {
           action: "FOLLOW_UP_PITFALL",
           utterance:
-            analysis.utterance ||
+            analysis!.utterance ||
             RESUME_CONFLICT_GENERIC_UTTERANCE,
           questionId: rt.question.id,
           followUpCount: rt.followUpCount,
@@ -1397,7 +1463,7 @@ export function decideTurn(input: {
     const alreadyChallenged =
       (session.authenticityChallengeCount || 0) > 0 || rt.resumeConflictProbeCount > 0;
     let analysis = resumeAnalysis;
-    if (!analysis?.conflict) {
+    {
       const check = runConsistencyCheck({
         answer: input.answer,
         resume: session.resume,
@@ -1406,12 +1472,24 @@ export function decideTurn(input: {
         question: rt.question,
       });
       if (check.analysis.conflict) {
-        analysis = check.analysis;
+        const preferLocal =
+          !analysis?.conflict ||
+          analysis.severity === "none" ||
+          hasImmediateChallengeConflicts(check.conflicts);
+        if (preferLocal) {
+          analysis = { ...check.analysis, inconsistencies: check.conflicts };
+        } else if (
+          analysis &&
+          !analysis.inconsistencies?.length &&
+          check.conflicts.length
+        ) {
+          analysis = { ...analysis, inconsistencies: check.conflicts };
+        }
         session.inconsistencies = appendInconsistencies(
           session.inconsistencies,
           check.conflicts,
         );
-      } else {
+      } else if (!analysis?.conflict) {
         const hit = detectResumeConflict(input.answer, session.resume, rt.question);
         if (hit) {
           analysis = {
@@ -1431,10 +1509,13 @@ export function decideTurn(input: {
         }
       }
     }
-    // LLM 弱冲突且启发式无命中：早期调研阶段不挂起 pending，避免误伤
+    // LLM 弱冲突且无硬事实命中：早期调研 / level4 可不挂起 pending，避免误伤
+    // 姓名等高严重度冲突永不清空、不可只记入报告
+    const hardFacts = hasImmediateChallengeConflicts(analysis?.inconsistencies);
     if (
       analysis?.conflict &&
       analysis.source === "llm" &&
+      !hardFacts &&
       !detectResumeConflict(input.answer, session.resume, rt.question) &&
       (rt.question.phase === "resume_research" || analysis.level === 4)
     ) {
@@ -1454,15 +1535,19 @@ export function decideTurn(input: {
     }
     if (analysis?.conflict && analysis.severity !== "none") {
       signals.resumeConflict = true;
-      const level = analysis.level || 3;
+      let level = analysis.level || 3;
+      if (hardFacts && level === 4) {
+        level = 1;
+        analysis = { ...analysis, level: 1 };
+      }
       signals.resumeConflictLevel = level;
       pendingTags.push("authenticity_risk");
       addSessionTag(session, "authenticity_risk");
 
       const record = analysisToRecord(analysis, rt.question.id);
 
-      // Level 4：风险备注，不立刻强挑战升级；仅短记一次
-      if (level === 4 && rt.resumeConflictProbeCount === 0) {
+      // Level 4 且无硬事实：风险备注短追一次；硬事实（姓名等）走下方正式挑战
+      if (level === 4 && !hardFacts && rt.resumeConflictProbeCount === 0) {
         if (record) {
           record.explainOutcome = "pending";
           session.resumeConflicts = [...(session.resumeConflicts || []), record];
