@@ -1,4 +1,4 @@
-import { PRESSURE_CONFIG, SKIP_SOFT_UTTERANCE } from "./config";
+import { INTEGRITY_END_UTTERANCE, PRESSURE_CONFIG, SKIP_SOFT_UTTERANCE } from "./config";
 import { RD_QUESTIONS } from "./questions/rd";
 import type {
   AbilityTag,
@@ -69,12 +69,20 @@ export function detectSignals(answer: string, silenceStuck?: boolean): TurnSigna
   const signals: TurnSignals = {};
   if (silenceStuck || text.length === 0) signals.stuckSubtype = "cannot_solve";
   if (text.length > 0 && text.length < PRESSURE_CONFIG.minAnswerChars) signals.tooShort = true;
-  if (/不会|没学过|不熟悉|没接触过/.test(text)) {
+  if (/不会|没学过|不熟悉|没接触过|答不上来|不知道/.test(text)) {
     signals.stuckSubtype = /没学过|没接触过|不熟悉/.test(text) ? "not_learned" : "cannot_solve";
   }
   if (/紧张|有点乱|组织不好/.test(text)) signals.stuckSubtype = "nervous";
   if (/提示|告诉我答案|标准答案|直接说答案/.test(text)) signals.askedForHint = true;
   if (/跳过|下一题|不会做了|放弃/.test(text)) signals.explicitGiveUp = true;
+  // 主动承认简历/项目造假、乱写
+  if (
+    /乱写|瞎写|编的|编造|杜撰|假的|造假|注水|简历.*(乱|假|编)|项目.*(乱写|假的|编的)|经历.*(乱写|假的)/.test(
+      text,
+    )
+  ) {
+    signals.integrityBreach = true;
+  }
   if (/薪资|多少钱|HC|加班|转正/.test(text)) {
     signals.metaQuestionType = /薪资|多少钱/.test(text) ? "salary" : "process";
   }
@@ -151,6 +159,23 @@ export function decideTurn(input: {
   const pendingTags: AbilityTag[] = [];
   if (input.answer.trim()) rt.userAnswers.push(input.answer.trim());
 
+  // 简历/经历不实：真人面试官会直接结束，而不是继续控场套话
+  if (signals.integrityBreach) {
+    pendingTags.push("role_mismatch_suspected");
+    if (pendingTags.length) rt.tags = Array.from(new Set([...rt.tags, ...pendingTags]));
+    return {
+      action: "FINISH",
+      utterance: INTEGRITY_END_UTTERANCE,
+      questionId: rt.question.id,
+      followUpCount: rt.followUpCount,
+      hintCount: rt.hintCount,
+      reframeCount: rt.reframeCount,
+      signals,
+      pendingTags,
+      done: true,
+    };
+  }
+
   if (signals.metaQuestionType) {
     return {
       action: "FORMULA_DEFLECT",
@@ -192,19 +217,7 @@ export function decideTurn(input: {
     if (signals.stuckSubtype === "cannot_solve") pendingTags.push("can_reason_trainable");
     if (signals.stuckSubtype === "nervous") pendingTags.push("nervous_but_capable");
 
-    if (rt.reframeCount < cfg.maxReframesPerQuestion && pressureOf(rt) < cfg.maxPressurePerQuestion) {
-      rt.reframeCount += 1;
-      return {
-        action: "REFRAME",
-        utterance: "换个角度——不谈概念定义，只说在你做过的项目里，你实际动手改过什么？",
-        questionId: rt.question.id,
-        followUpCount: rt.followUpCount,
-        hintCount: rt.hintCount,
-        reframeCount: rt.reframeCount,
-        signals,
-        pendingTags,
-      };
-    }
+    // 明显答不上来：记录表现后换题，不刨根问底
     return advance(session, "SKIP_SOFT", SKIP_SOFT_UTTERANCE, signals, pendingTags);
   }
 

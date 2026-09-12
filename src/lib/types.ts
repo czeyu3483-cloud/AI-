@@ -80,6 +80,8 @@ export type TurnSignals = {
   askedForHint?: boolean;
   explicitGiveUp?: boolean;
   tooShort?: boolean;
+  /** 主动承认简历/项目造假或乱写 */
+  integrityBreach?: boolean;
 };
 
 export type QuestionRuntime = {

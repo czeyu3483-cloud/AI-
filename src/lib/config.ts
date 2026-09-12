@@ -31,7 +31,11 @@ export const PRESSURE_CONFIG: BehaviorConfig = {
   tone: "steady_firm",
 };
 
-export const SKIP_SOFT_UTTERANCE = "没关系，这题先过，换个方向聊聊。";
+export const SKIP_SOFT_UTTERANCE = "好，这题我先记下了，我们换一个。";
+
+/** 简历/经历明显不实或主动承认乱写时，直接结束 */
+export const INTEGRITY_END_UTTERANCE =
+  "那你先把简历完善扎实了再来面试吧，今天就先到这里。";
 
 /** @deprecated 开场白改为 persona.buildOpeningLine，保留常量以免旧引用报错 */
 export const INTRO_PRESSURE = "";
