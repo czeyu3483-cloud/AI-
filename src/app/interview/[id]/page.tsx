@@ -4,6 +4,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { DigitalHuman } from "@/components/DigitalHuman";
 import {
+  BARGE_IN_LINE,
+  DONT_INTERRUPT_LINE,
+  pickFiller,
+  shouldBargeIn,
+} from "@/lib/persona";
+import {
   ensureMicPermission,
   fetchTtsBlob,
   getSpeechRecognitionCtor,
@@ -19,6 +25,8 @@ type BootState = {
   total: number;
   config: BehaviorConfig;
   mockedLlm?: boolean;
+  interviewerName?: string;
+  candidateName?: string;
 };
 
 export default function InterviewPage() {
@@ -39,9 +47,10 @@ export default function InterviewPage() {
   const [fallbackText, setFallbackText] = useState("");
   const [showTextFallback, setShowTextFallback] = useState(false);
   const [asrSupported, setAsrSupported] = useState(true);
+  const [interviewerName, setInterviewerName] = useState("王老师");
 
   const stuckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const autoSubmitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const doneTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
@@ -49,31 +58,46 @@ export default function InterviewPage() {
   const lastUtteranceRef = useRef("");
   const speakingRef = useRef(false);
   const busyRef = useRef(false);
+  const listeningRef = useRef(false);
+  const bargedRef = useRef(false);
+  const interruptCooldownRef = useRef(false);
+  const wantListenRef = useRef(false);
+  const audioReadyRef = useRef(false);
+  const speakStartedAtRef = useRef(0);
+  const doneMsRef = useRef(900);
+  const stuckMsRef = useRef(4500);
 
-  const stuckMs = boot?.config.silenceStuckMs ?? 6000;
   const progress = useMemo(() => `${Math.min(index + 1, total)} / ${total}`, [index, total]);
 
   function clearTimers() {
     if (stuckTimer.current) clearTimeout(stuckTimer.current);
-    if (autoSubmitTimer.current) clearTimeout(autoSubmitTimer.current);
+    if (doneTimer.current) clearTimeout(doneTimer.current);
     stuckTimer.current = null;
-    autoSubmitTimer.current = null;
+    doneTimer.current = null;
+  }
+
+  function stopRecognition() {
+    wantListenRef.current = false;
+    try {
+      recognitionRef.current?.stop();
+    } catch {
+      // ignore
+    }
+    recognitionRef.current = null;
+    listeningRef.current = false;
+    setListening(false);
   }
 
   function resetStuckTimer() {
     if (stuckTimer.current) clearTimeout(stuckTimer.current);
-    if (speakingRef.current || busyRef.current || listening) return;
+    if (speakingRef.current || busyRef.current || listeningRef.current) return;
     stuckTimer.current = setTimeout(() => {
       void submitTurn("", true);
-    }, stuckMs);
+    }, stuckMsRef.current);
   }
 
-  async function playUtterance(text: string) {
-    lastUtteranceRef.current = text;
-    speakingRef.current = true;
-    setAvatar("speaking");
-    setStatus("面试官正在提问（请听语音，无字幕）");
-    if (stuckTimer.current) clearTimeout(stuckTimer.current);
+  async function speakRaw(text: string): Promise<void> {
+    if (!text.trim()) return;
     audioRef.current?.pause();
     window.speechSynthesis?.cancel();
 
@@ -93,22 +117,12 @@ export default function InterviewPage() {
         };
         void audio.play().catch(reject);
       });
-      speakingRef.current = false;
-      setAvatar("listening");
-      setStatus("轮到你了：点击麦克风作答（需允许麦克风权限）");
-      resetStuckTimer();
       return;
     } catch {
       // browser TTS fallback
     }
 
-    if (!window.speechSynthesis) {
-      speakingRef.current = false;
-      setAvatar("listening");
-      setStatus("语音不可用。可点「重播」或用文字作答。");
-      setShowTextFallback(true);
-      return;
-    }
+    if (!window.speechSynthesis) return;
 
     await new Promise<void>((resolve) => {
       const existing = window.speechSynthesis.getVoices();
@@ -133,10 +147,58 @@ export default function InterviewPage() {
       utterance.onerror = () => resolve();
       window.speechSynthesis.speak(utterance);
     });
+  }
+
+  async function playUtterance(text: string, opts?: { autoListen?: boolean }) {
+    const autoListen = opts?.autoListen !== false;
+    lastUtteranceRef.current = text;
+    speakingRef.current = true;
+    speakStartedAtRef.current = Date.now();
+    setAvatar("speaking");
+    setStatus("面试官正在说…你听完再答");
+    clearTimers();
+    // 不清掉识别：播报期间继续听，方便提醒别抢话（依赖回声消除）
+    answerBuf.current = "";
+    bargedRef.current = false;
+    setInterim("");
+    wantListenRef.current = true;
+    if (audioReadyRef.current) {
+      void startListening({ continuous: true, keepBuffer: true, allowWhileSpeaking: true });
+    }
+
+    await speakRaw(text);
+
     speakingRef.current = false;
     setAvatar("listening");
-    setStatus("轮到你了：点击麦克风作答");
-    resetStuckTimer();
+    setStatus("轮到你了，直接说就行；说完稍停我会接话");
+    if (autoListen && audioReadyRef.current) {
+      void startListening({ continuous: true });
+    } else {
+      resetStuckTimer();
+    }
+  }
+
+  async function handleCandidateInterrupt() {
+    if (!speakingRef.current || interruptCooldownRef.current || busyRef.current) return;
+    interruptCooldownRef.current = true;
+    audioRef.current?.pause();
+    window.speechSynthesis?.cancel();
+    speakingRef.current = true;
+    speakStartedAtRef.current = Date.now();
+    setAvatar("speaking");
+    setStatus("先听完我说哦");
+    setError("");
+    answerBuf.current = "";
+    setInterim("");
+    try {
+      await speakRaw(DONT_INTERRUPT_LINE);
+    } finally {
+      speakingRef.current = false;
+      interruptCooldownRef.current = false;
+      setAvatar("listening");
+      setStatus("好，继续说你的回答");
+      void startListening({ continuous: true });
+    }
   }
 
   useEffect(() => {
@@ -166,6 +228,8 @@ export default function InterviewPage() {
             index: json.index,
             total: json.total,
             config: json.config,
+            interviewerName: json.interviewerName,
+            candidateName: json.candidateName || "",
           };
         } catch (e) {
           if (!cancelled) {
@@ -179,8 +243,11 @@ export default function InterviewPage() {
       setBoot(data);
       setIndex(data.index);
       setTotal(data.total);
+      setInterviewerName(data.interviewerName || "王老师");
+      doneMsRef.current = data.config.silenceThinkingMs ?? 900;
+      stuckMsRef.current = data.config.silenceStuckMs ?? 4500;
       lastUtteranceRef.current = data.utterance;
-      setStatus("点击下方按钮开启语音（浏览器要求先手动授权声音）");
+      setStatus("点一下下方按钮，开启语音（浏览器要手动授权声音）");
     }
 
     void bootSession();
@@ -203,6 +270,7 @@ export default function InterviewPage() {
   async function beginAudioInterview() {
     setError("");
     setAudioReady(true);
+    audioReadyRef.current = true;
     try {
       const ctx = new AudioContext();
       if (ctx.state === "suspended") await ctx.resume();
@@ -214,7 +282,7 @@ export default function InterviewPage() {
       micStreamRef.current = await ensureMicPermission();
     } catch {
       setShowTextFallback(true);
-      setError("无法打开麦克风。可改用下方文字作答，或检查浏览器麦克风权限。");
+      setError("没法开麦克风。可以先用文字答，或检查浏览器权限。");
     }
     if (lastUtteranceRef.current) {
       await playUtterance(lastUtteranceRef.current);
@@ -229,12 +297,24 @@ export default function InterviewPage() {
     setInterim("");
     setFallbackText("");
     answerBuf.current = "";
+    bargedRef.current = false;
     clearTimers();
-    recognitionRef.current?.stop();
-    setListening(false);
+    stopRecognition();
 
-    if (silenceStuck) setStatus("检测到长时间沉默，正在换角度…");
-    else setStatus("正在理解你的回答…");
+    if (silenceStuck) {
+      setStatus("好像卡住了，我换个角度…");
+    } else {
+      setStatus("嗯，我听一下…");
+      setAvatar("speaking");
+      speakingRef.current = true;
+      try {
+        await speakRaw(pickFiller());
+      } catch {
+        // ignore filler failure
+      }
+      speakingRef.current = false;
+      setAvatar("idle");
+    }
 
     try {
       const res = await fetch("/api/interview/turn", {
@@ -249,7 +329,7 @@ export default function InterviewPage() {
       if (typeof data.total === "number") setTotal(data.total);
 
       if (data.done) {
-        setStatus("本场结束，正在生成复盘…");
+        setStatus("先到这儿，我帮你整理复盘…");
         sessionStorage.setItem(
           `feedback:${sessionId}`,
           JSON.stringify(data.feedback as FeedbackReport),
@@ -260,48 +340,58 @@ export default function InterviewPage() {
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "回合失败");
-      setStatus("出了点问题，可再试一次");
+      setStatus("出了点小状况，你再说一次也行");
       setAvatar("listening");
+      void startListening({ continuous: true });
     } finally {
       busyRef.current = false;
       setBusy(false);
     }
   }
 
-  function scheduleAutoSubmit() {
-    if (autoSubmitTimer.current) clearTimeout(autoSubmitTimer.current);
-    autoSubmitTimer.current = setTimeout(() => {
+  function scheduleDoneSubmit() {
+    if (doneTimer.current) clearTimeout(doneTimer.current);
+    doneTimer.current = setTimeout(() => {
       const text = answerBuf.current.trim();
-      if (!text) return;
-      recognitionRef.current?.stop();
-      setListening(false);
+      if (!text || busyRef.current || speakingRef.current) return;
       void submitTurn(text);
-    }, 1600);
+    }, doneMsRef.current);
   }
 
-  async function toggleMic() {
-    if (!audioReady) {
-      setError("请先点击「开启语音面试」");
-      return;
+  async function maybeBargeIn(partial: string) {
+    if (bargedRef.current || busyRef.current || speakingRef.current) return;
+    if (!shouldBargeIn(partial)) return;
+    bargedRef.current = true;
+    if (doneTimer.current) clearTimeout(doneTimer.current);
+    stopRecognition();
+    speakingRef.current = true;
+    setAvatar("speaking");
+    setStatus("这块有点笼统，我插一句");
+    try {
+      await speakRaw(BARGE_IN_LINE);
+    } finally {
+      speakingRef.current = false;
+      setAvatar("listening");
+      setStatus("接着说细一点就行");
+      // 保留已说内容，让对方补细节后再提交
+      void startListening({ continuous: true, keepBuffer: true });
     }
-    if (speakingRef.current) {
-      setError("请先听完面试官提问");
-      return;
-    }
+  }
+
+  async function startListening(opts?: {
+    continuous?: boolean;
+    keepBuffer?: boolean;
+    allowWhileSpeaking?: boolean;
+  }) {
+    if (!audioReadyRef.current || busyRef.current) return;
+    if (speakingRef.current && !opts?.allowWhileSpeaking) return;
 
     const SpeechRecognitionCtor = getSpeechRecognitionCtor();
     if (!SpeechRecognitionCtor) {
       setAsrSupported(false);
       setShowTextFallback(true);
-      setError("当前浏览器不支持语音识别，请用文字作答或换 Chrome");
-      return;
-    }
-
-    if (listening) {
-      recognitionRef.current?.stop();
-      setListening(false);
-      const text = answerBuf.current.trim();
-      if (text) void submitTurn(text);
+      setError("这个浏览器不好识别语音，换 Chrome，或用文字答也行");
+      resetStuckTimer();
       return;
     }
 
@@ -314,23 +404,61 @@ export default function InterviewPage() {
       }
     } catch {
       setShowTextFallback(true);
-      setError("麦克风权限被拒绝。请在地址栏允许麦克风，或改用文字作答。");
+      setError("麦克风没开。地址栏允许一下，或改用文字答。");
       return;
     }
 
     if (stuckTimer.current) clearTimeout(stuckTimer.current);
+    if (doneTimer.current) clearTimeout(doneTimer.current);
+
+    // 已在听就别重复起
+    if (listeningRef.current && recognitionRef.current) {
+      wantListenRef.current = true;
+      if (!speakingRef.current) {
+        setStatus("我在听，你边说边组织就行；说完稍停我会接");
+        setAvatar("listening");
+      }
+      return;
+    }
+
+    try {
+      recognitionRef.current?.stop();
+    } catch {
+      // ignore
+    }
+
     const recognition = new SpeechRecognitionCtor();
     recognition.lang = "zh-CN";
     recognition.continuous = true;
     recognition.interimResults = true;
     recognitionRef.current = recognition;
-    answerBuf.current = "";
-    setInterim("");
-    setStatus("正在听你说…说完稍停会自动提交");
-    setAvatar("listening");
+    wantListenRef.current = true;
+    if (!opts?.keepBuffer) {
+      answerBuf.current = "";
+      bargedRef.current = false;
+      setInterim("");
+    }
+    if (!speakingRef.current) {
+      setStatus("我在听，你边说边组织就行；说完稍停我会接");
+      setAvatar("listening");
+    }
     setError("");
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
+      // 面试官说话时你开口 → 提醒别抢话（播报开头 0.8s 忽略，减轻回声误触）
+      if (speakingRef.current) {
+        if (Date.now() - speakStartedAtRef.current < 800) return;
+        let heard = "";
+        for (let i = event.resultIndex; i < event.results.length; i += 1) {
+          heard += event.results[i]![0]!.transcript;
+        }
+        if (heard.replace(/\s+/g, "").length >= 4) {
+          void handleCandidateInterrupt();
+        }
+        return;
+      }
+      if (busyRef.current) return;
+
       let finalChunk = "";
       let live = "";
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
@@ -340,44 +468,106 @@ export default function InterviewPage() {
       }
       if (finalChunk) {
         answerBuf.current += finalChunk;
-        scheduleAutoSubmit();
+        // 一句一句先存下；短停顿后判定说完
+        scheduleDoneSubmit();
+        void maybeBargeIn(answerBuf.current);
+      } else if (live) {
+        // 还在说：取消「说完」计时
+        if (doneTimer.current) clearTimeout(doneTimer.current);
       }
       setInterim(`${answerBuf.current}${live}`.trim());
       if (stuckTimer.current) clearTimeout(stuckTimer.current);
     };
+
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      listeningRef.current = false;
       setListening(false);
       const code = event.error || "unknown";
+      if (code === "aborted") return;
       if (code === "not-allowed") {
         setShowTextFallback(true);
-        setError("麦克风权限被拒绝，请改用文字作答或检查浏览器设置");
+        setError("麦克风权限被拒了，改用文字答也行");
       } else if (code === "no-speech") {
-        setError("没有听到声音，请靠近麦克风再说一次");
+        // 静默结束很常见，继续听
+        if (wantListenRef.current && !busyRef.current && !speakingRef.current) {
+          setTimeout(() => void startListening({ continuous: true, keepBuffer: true }), 200);
+        }
       } else {
         setShowTextFallback(true);
-        setError(`语音识别失败（${code}）。可改用文字作答。`);
+        setError(`语音识别有点问题（${code}）。可以先文字答。`);
       }
     };
+
     recognition.onend = () => {
+      listeningRef.current = false;
       setListening(false);
+      // 浏览器会周期性停掉 continuous；还在等回答就自动重启
+      if (
+        wantListenRef.current &&
+        !busyRef.current &&
+        !speakingRef.current &&
+        audioReadyRef.current
+      ) {
+        const text = answerBuf.current.trim();
+        if (text && !doneTimer.current) {
+          // 已经有内容且没有待提交计时，稍等后提交
+          scheduleDoneSubmit();
+        }
+        setTimeout(() => {
+          if (
+            wantListenRef.current &&
+            !busyRef.current &&
+            !speakingRef.current &&
+            !listeningRef.current
+          ) {
+            void startListening({ continuous: true, keepBuffer: true });
+          }
+        }, 180);
+        return;
+      }
+
       const text = answerBuf.current.trim();
-      if (text && !busyRef.current && !speakingRef.current) {
-        if (autoSubmitTimer.current) return;
+      if (text && !busyRef.current && !speakingRef.current && !doneTimer.current) {
         void submitTurn(text);
       }
     };
 
     try {
       recognition.start();
+      listeningRef.current = true;
       setListening(true);
     } catch {
       setShowTextFallback(true);
-      setError("无法启动语音识别，请改用文字作答");
+      setError("语音识别起不来，先用文字答吧");
+      resetStuckTimer();
     }
+  }
+
+  async function toggleMic() {
+    if (!audioReady) {
+      setError("先点「开启语音面试」");
+      return;
+    }
+    if (speakingRef.current) {
+      setError("等我说完再开口就行");
+      return;
+    }
+    if (listeningRef.current) {
+      // 手动说完
+      if (doneTimer.current) clearTimeout(doneTimer.current);
+      wantListenRef.current = false;
+      stopRecognition();
+      const text = answerBuf.current.trim();
+      if (text) void submitTurn(text);
+      else setStatus("我还没听清，再说一遍？");
+      return;
+    }
+    void startListening({ continuous: true });
   }
 
   async function finishNow() {
     setBusy(true);
+    stopRecognition();
     const res = await fetch("/api/interview/finish", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -401,27 +591,25 @@ export default function InterviewPage() {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col items-center px-5 py-8">
       <header className="mb-6 w-full text-center">
-        <p className="text-xs tracking-[0.2em] text-[var(--muted)]">VOICE ONLY · 压力面</p>
-        <h1 className="mt-2 text-2xl font-semibold">纯语音模拟面试</h1>
+        <p className="text-xs tracking-[0.2em] text-[var(--muted)]">语音面试</p>
+        <h1 className="mt-2 text-2xl font-semibold">和{interviewerName}聊聊</h1>
         <p className="mt-2 text-sm text-[var(--muted)]">
-          无字幕对话 · 简单数字人陪练 · 听完后开口作答
+          听完再答 · 说完稍停会自动接话 · 讲得太笼统时可能会插一句
         </p>
       </header>
 
-      <DigitalHuman state={avatar} progress={progress} />
+      <DigitalHuman state={avatar} progress={progress} interviewerName={interviewerName} />
 
       <p className="mt-6 max-w-md text-center text-sm leading-6 text-[var(--text)]">{status}</p>
       {interim ? (
-        <p className="mt-2 max-w-lg text-center text-sm text-[var(--accent-2)]">识别到：{interim}</p>
+        <p className="mt-2 max-w-lg text-center text-sm text-[var(--accent-2)]">刚听到：{interim}</p>
       ) : null}
       {error ? <p className="mt-3 max-w-lg text-center text-sm text-[var(--danger)]">{error}</p> : null}
       {boot?.mockedLlm ? (
-        <p className="mt-2 text-xs text-[var(--accent-2)]">LLM 已降级为本地话术</p>
+        <p className="mt-2 text-xs text-[var(--accent-2)]">当前走本地话术（未连上大模型）</p>
       ) : null}
       {!asrSupported ? (
-        <p className="mt-2 text-xs text-[var(--muted)]">
-          当前浏览器不支持语音识别，请用文字作答或换 Chrome。
-        </p>
+        <p className="mt-2 text-xs text-[var(--muted)]">当前浏览器不支持语音识别，请用文字或换 Chrome。</p>
       ) : null}
 
       {!audioReady ? (
@@ -457,7 +645,7 @@ export default function InterviewPage() {
               onClick={() => void playUtterance(lastUtteranceRef.current)}
               className="rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--muted)]"
             >
-              重播上一题
+              重播上一句
             </button>
             <button
               type="button"
@@ -486,7 +674,7 @@ export default function InterviewPage() {
           {showTextFallback ? (
             <div className="mt-6 w-full max-w-lg space-y-3 rounded-2xl border border-[var(--line)] bg-[var(--card)]/80 p-4">
               <p className="text-xs text-[var(--muted)]">
-                云端预览或无麦克风时可用文字作答；本机请用 Chrome 并允许麦克风。
+                没麦克风时可用文字；本机请尽量用 Chrome 并允许麦克风。
               </p>
               <textarea
                 value={fallbackText}

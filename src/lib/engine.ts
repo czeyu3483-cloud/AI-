@@ -1,4 +1,4 @@
-import { INTRO_PRESSURE, PRESSURE_CONFIG, SKIP_SOFT_UTTERANCE } from "./config";
+import { PRESSURE_CONFIG, SKIP_SOFT_UTTERANCE } from "./config";
 import { RD_QUESTIONS } from "./questions/rd";
 import type {
   AbilityTag,
@@ -156,8 +156,8 @@ export function decideTurn(input: {
       action: "FORMULA_DEFLECT",
       utterance:
         signals.metaQuestionType === "salary"
-          ? "薪资相关由 HR 统一沟通。我们继续回到技术问题。"
-          : "模拟面试环节不做录用结论。我们继续当前问题。",
+          ? "薪资这块一般是 HR 那边聊，咱们先把技术问题过完。"
+          : "录用结论这边不好当场说，咱们继续把当前问题聊清楚。",
       questionId: rt.question.id,
       followUpCount: rt.followUpCount,
       hintCount: rt.hintCount,
@@ -288,5 +288,6 @@ export function decideTurn(input: {
 }
 
 export function initialAskUtterance(first: Question) {
-  return `${INTRO_PRESSURE}${first.prompt}`;
+  // 开场白由 start 路由用 persona 组装；这里仅返回首题，避免重复介绍
+  return first.prompt;
 }

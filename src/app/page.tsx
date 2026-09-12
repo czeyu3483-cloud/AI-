@@ -8,7 +8,6 @@ export default function HomePage() {
   const [roleId, setRoleId] = useState<RoleId>("rd_general");
   const [styleId, setStyleId] = useState<StyleId>("pressure");
   const [resumeText, setResumeText] = useState(SAMPLE_RESUME);
-  const [profile, setProfile] = useState<ResumeProfile | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [fileName, setFileName] = useState("");
@@ -18,28 +17,20 @@ export default function HomePage() {
     [roleId, styleId, resumeText],
   );
 
-  async function parseResume(file?: File) {
+  async function extractFileText(file: File) {
     setBusy(true);
     setError("");
     try {
-      let res: Response;
-      if (file) {
-        const form = new FormData();
-        form.append("file", file);
-        res = await fetch("/api/resume/parse", { method: "POST", body: form });
-      } else {
-        res = await fetch("/api/resume/parse", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: resumeText }),
-        });
-      }
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch("/api/resume/parse", { method: "POST", body: form });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "解析失败");
-      setProfile(data.profile);
+      if (!res.ok) throw new Error(data.error || "读取文件失败");
+      // 只取文本，不展示 AI 预览
       if (data.profile?.rawText) setResumeText(data.profile.rawText);
+      else throw new Error("未能从文件提取文本");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "解析失败");
+      setError(e instanceof Error ? e.message : "读取文件失败");
     } finally {
       setBusy(false);
     }
@@ -49,7 +40,6 @@ export default function HomePage() {
     setBusy(true);
     setError("");
     try {
-      // Always re-analyze resume on start — no separate "AI summarize" click required.
       const parsedRes = await fetch("/api/resume/parse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -60,7 +50,6 @@ export default function HomePage() {
         throw new Error(parsed.error || "简历分析失败");
       }
       const current = parsed.profile as ResumeProfile;
-      setProfile(current);
 
       const res = await fetch("/api/interview/start", {
         method: "POST",
@@ -79,14 +68,14 @@ export default function HomePage() {
         total: data.total as number,
         config: data.config,
         mockedLlm: Boolean(data.mockedLlm),
+        interviewerName: (data.interviewerName as string) || "王老师",
+        candidateName: (data.candidateName as string) || current.name || "",
       };
       try {
         sessionStorage.setItem(`interview:${boot.sessionId}`, JSON.stringify(boot));
       } catch {
-        // ignore storage quota / private mode
+        // ignore
       }
-
-      // Hard navigation is more reliable than soft router.push for this demo flow.
       window.location.assign(`/interview/${boot.sessionId}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "开场失败");
@@ -100,8 +89,7 @@ export default function HomePage() {
         <p className="text-sm tracking-[0.2em] text-[var(--accent)]">LOCAL DEMO</p>
         <h1 className="text-4xl font-semibold leading-tight md:text-5xl">仿真 AI 模拟面试官</h1>
         <p className="max-w-2xl text-[var(--muted)]">
-          面向校招/实习研发面试演练。本 Demo 仅开放「研发岗 · 压力面」；控场由状态机驱动，DeepSeek
-          负责话术润色与复盘。
+          面向校招/实习研发面试演练。粘贴简历后直接开始；面试官会用口语化开场，全程语音交流。
         </p>
       </header>
 
@@ -147,7 +135,7 @@ export default function HomePage() {
             ))}
           </div>
           <p className="mt-3 text-xs text-[var(--muted)]">
-            压力面：短留白、深追问、默认不给思路提示；卡壳先换角度，再软跳题。
+            面试中会追问细节与边界；卡壳时换角度，再不行就换题。开场不会提「压力面」字样。
           </p>
         </div>
       </section>
@@ -166,7 +154,7 @@ export default function HomePage() {
                   const f = e.target.files?.[0];
                   if (!f) return;
                   setFileName(f.name);
-                  void parseResume(f);
+                  void extractFileText(f);
                 }}
               />
             </label>
@@ -175,87 +163,26 @@ export default function HomePage() {
               className="rounded-full border border-[var(--line)] px-3 py-1.5 text-sm text-[var(--muted)]"
               onClick={() => {
                 setResumeText(SAMPLE_RESUME);
-                setProfile(null);
                 setFileName("");
               }}
             >
               填入脱敏样例
             </button>
-            <button
-              type="button"
-              disabled={busy || !resumeText.trim()}
-              onClick={() => void parseResume()}
-              className="rounded-full border border-[var(--line)] px-3 py-1.5 text-sm text-[var(--muted)]"
-            >
-              {busy ? "预览生成中…" : "预览 AI 总结（可选）"}
-            </button>
           </div>
         </div>
         <p className="mb-2 text-xs text-[var(--muted)]">
           请使用脱敏简历。{fileName ? `已选文件：${fileName}` : "也可直接粘贴文本。"}
-          点击「开始面试」会自动分析简历，无需先点总结。
+          开始面试时会在后台分析简历，不展示 AI 预览。
         </p>
         <textarea
           value={resumeText}
-          onChange={(e) => {
-            setResumeText(e.target.value);
-            setProfile(null);
-          }}
-          rows={10}
+          onChange={(e) => setResumeText(e.target.value)}
+          rows={12}
           className="w-full rounded-xl border border-[var(--line)] bg-[#0d1524] p-4 text-sm leading-6 outline-none focus:border-[var(--accent)]"
         />
-        {profile && (
-          <div className="mt-4 space-y-3 rounded-xl border border-[var(--line)] bg-[#0d1524] p-4 text-sm">
-            <p className="text-[var(--accent)]">AI 简历总结</p>
-            {profile.parseMeta.warnings.length > 0 && (
-              <p className="text-xs text-[var(--accent-2)]">{profile.parseMeta.warnings.join(" · ")}</p>
-            )}
-            <p>
-              <span className="text-[var(--muted)]">姓名：</span>
-              {profile.name || "未识别"}
-            </p>
-            {profile.summary && (
-              <p className="leading-6 text-[var(--muted)]">
-                <span className="text-[var(--text)]">概述：</span>
-                {profile.summary}
-              </p>
-            )}
-            <p>
-              <span className="text-[var(--muted)]">技能：</span>
-              {(profile.skills || []).join("、") || "未识别"}
-            </p>
-            {(profile.experiences || []).length > 0 && (
-              <div>
-                <p className="mb-1 text-[var(--muted)]">过往经历</p>
-                <ul className="list-disc space-y-1 pl-5 text-[var(--muted)]">
-                  {profile.experiences.map((e, i) => (
-                    <li key={`${e.org || "exp"}-${i}`}>
-                      {[e.org, e.title, e.period].filter(Boolean).join(" · ") || "经历条目"}
-                      {e.highlights?.[0] ? ` — ${e.highlights[0]}` : ""}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {(profile.projects || []).length > 0 && (
-              <div>
-                <p className="mb-1 text-[var(--muted)]">项目</p>
-                <ul className="list-disc space-y-1 pl-5 text-[var(--muted)]">
-                  {profile.projects.map((p) => (
-                    <li key={p.name}>
-                      {p.name}
-                      {p.role ? ` · ${p.role}` : ""}
-                      {p.highlights?.[0] ? ` — ${p.highlights[0]}` : ""}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        )}
       </section>
 
-      {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
+      {error ? <p className="text-sm text-[var(--danger)]">{error}</p> : null}
 
       <div className="flex flex-wrap items-center gap-4">
         <button
@@ -264,11 +191,9 @@ export default function HomePage() {
           onClick={() => void startInterview()}
           className="cursor-pointer rounded-full bg-[var(--accent)] px-6 py-3 text-sm font-semibold text-[#042a26] disabled:cursor-not-allowed"
         >
-          {busy ? "正在分析简历并开场…" : "开始压力面面试"}
+          {busy ? "正在准备面试…" : "开始面试"}
         </button>
-        <p className="text-xs text-[var(--muted)]">
-          开始时会自动 AI 分析简历 · 面试页需授权声音与麦克风
-        </p>
+        <p className="text-xs text-[var(--muted)]">进入后请授权麦克风与声音，全程可语音作答</p>
       </div>
     </main>
   );

@@ -14,8 +14,8 @@ export const DEMO_STYLES: Array<{ id: StyleId; label: string; enabled: boolean }
 ];
 
 export const PRESSURE_CONFIG: BehaviorConfig = {
-  silenceThinkingMs: 2000,
-  silenceStuckMs: 6000,
+  silenceThinkingMs: 900,
+  silenceStuckMs: 4500,
   maxFollowUpsPerQuestion: 3,
   maxPressurePerQuestion: 3,
   maxHintsPerQuestion: 0,
@@ -32,8 +32,8 @@ export const PRESSURE_CONFIG: BehaviorConfig = {
 
 export const SKIP_SOFT_UTTERANCE = "没关系，这题先过，换个方向聊聊。";
 
-export const INTRO_PRESSURE =
-  "你好，我是今天的模拟面试官。本场是研发岗压力面：节奏偏紧，少提示，会追问边界与细节。请一次把一个问题讲清楚。我们开始。";
+/** @deprecated 开场白改为 persona.buildOpeningLine，保留常量以免旧引用报错 */
+export const INTRO_PRESSURE = "";
 
 export const RED_FLAG_PATTERNS = [
   /你停一下/,
@@ -46,6 +46,9 @@ export const RED_FLAG_PATTERNS = [
   /太棒了/,
   /完全正确/,
   /换简单的/,
+  /压力面/,
+  /模拟面试/,
+  /数字人/,
 ];
 
 export const SAMPLE_RESUME = `张三

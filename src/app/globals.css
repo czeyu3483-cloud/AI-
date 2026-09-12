@@ -134,6 +134,24 @@ button:disabled {
   opacity: 0.9;
 }
 
+.dh-photo-wrap {
+  transform-origin: 50% 100%;
+  animation: dh-breathe 3.6s ease-in-out infinite;
+}
+.dh-photo-wrap.speaking {
+  animation: dh-breathe 2.4s ease-in-out infinite, dh-nod 2.8s ease-in-out infinite;
+}
+.dh-photo-wrap.listening {
+  animation: dh-breathe 3.2s ease-in-out infinite;
+}
+.dh-photo {
+  border-radius: 0.25rem 0.25rem 0 0;
+  transition: filter 0.25s ease;
+}
+.dh-photo-speak {
+  filter: brightness(1.04) contrast(1.02);
+}
+
 .dh-bar {
   display: inline-block;
   width: 4px;

@@ -7,6 +7,7 @@ import {
   createRuntimes,
   initialAskUtterance,
 } from "@/lib/engine";
+import { buildOpeningLine, pickInterviewerName } from "@/lib/persona";
 import { newSessionId, pushEvent, saveSession } from "@/lib/store";
 import type { InterviewSession, ResumeProfile, RoleId, StyleId } from "@/lib/types";
 
@@ -32,13 +33,21 @@ export async function POST(req: Request) {
       : undefined;
     const queue = buildQuestionQueue(resume);
     const runtimes = createRuntimes(queue);
-    const draft = initialAskUtterance(queue[0]!);
+    const interviewerName = pickInterviewerName();
+    const opening = buildOpeningLine({
+      candidateName: resume?.name,
+      interviewerName,
+      questionCount: queue.length,
+    });
+    const questionDraft = initialAskUtterance(queue[0]!);
     const polished = await polishUtterance({
       action: "ASK",
-      draft,
+      draft: questionDraft,
       questionPrompt: queue[0]!.prompt,
       tone: PRESSURE_CONFIG.tone,
     });
+    // 开场白保持口语模板，不交给模型改写，避免又冒出「压力面/模拟」等说法
+    const utterance = `${opening}${polished.text}`;
 
     const session: InterviewSession = {
       id: newSessionId(),
@@ -48,24 +57,32 @@ export async function POST(req: Request) {
       queue,
       currentIndex: 0,
       runtimes,
-      lastUtterance: polished.text,
+      lastUtterance: utterance,
       lastAction: "ASK",
       status: "active",
       events: [],
       createdAt: new Date().toISOString(),
+      interviewerName,
     };
-    pushEvent(session, "start", { roleId, styleId, mocked: polished.mocked });
-    pushEvent(session, "ask", { questionId: queue[0]!.id, utterance: polished.text });
+    pushEvent(session, "start", {
+      roleId,
+      styleId,
+      mocked: polished.mocked,
+      interviewerName,
+    });
+    pushEvent(session, "ask", { questionId: queue[0]!.id, utterance });
     saveSession(session);
 
     return NextResponse.json({
       sessionId: session.id,
-      utterance: polished.text,
+      utterance,
       question: queue[0],
       index: 0,
       total: queue.length,
       config: session.config,
       mockedLlm: polished.mocked,
+      interviewerName,
+      candidateName: resume?.name || null,
     });
   } catch (e) {
     return NextResponse.json(

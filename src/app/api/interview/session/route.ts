@@ -22,5 +22,7 @@ export async function GET(req: Request) {
     status: session.status,
     feedback: session.feedback ?? null,
     lastAction: session.lastAction,
+    interviewerName: session.interviewerName || "王老师",
+    candidateName: session.resume?.name || null,
   });
 }

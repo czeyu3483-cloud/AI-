@@ -122,6 +122,8 @@ export type InterviewSession = {
   events: SessionEvent[];
   feedback?: FeedbackReport;
   createdAt: string;
+  /** 本场随机面试官称呼，如「王老师」 */
+  interviewerName?: string;
 };
 
 export type TurnDecision = {
