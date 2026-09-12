@@ -741,7 +741,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
       `以下仍给出各能力维度评分供复盘（诚信维单独标为严重）；本报告不做录用结论。`
     : trackId === "hr_final"
       ? `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}）。整体完成了主流程；建议用具体协作场景、动机证据与上手计划证明适配度。本报告不做录用结论。`
-      : `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}）。按简历调研→深挖→专业题→编程推进；建议继续用项目细节、取舍与边界证明实践深度。本报告不做录用结论。`;
+      : `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}）。按约 4 题推进（简历深挖→专业情景→编程可跳过）；建议继续用 WHY/规模/职责与边界证明实践深度。本报告不做录用结论。`;
 
   let dimensions = heuristicDimensionScores(
     session,
@@ -904,6 +904,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
               passedCount: cr.passedCount,
               total: cr.total,
               complexityNotes: cr.complexityNotes,
+              skipped: Boolean(cr.skipped),
             })),
             resumeRawExcerpt: resumeRawExcerpt.slice(0, 600),
             dimensionWeights: TRACK_DIMENSION_WEIGHTS[trackId],
@@ -958,7 +959,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
       ? (json.nextRoundAdvice as unknown[]).map(String).slice(0, 5)
       : nextRoundAdvice;
 
-    const techNotes = Array.isArray(json.techCorrectnessNotes)
+    const llmTechNotes = Array.isArray(json.techCorrectnessNotes)
       ? (json.techCorrectnessNotes as Array<Record<string, unknown>>).map((n) => ({
           questionId: n.questionId ? String(n.questionId) : undefined,
           note: String(n.note || ""),
@@ -966,7 +967,23 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
             ? String(n.severity)
             : "info") as TechCorrectnessNote["severity"],
         }))
-      : techCorrectnessNotes;
+      : [];
+    const skippedCodingIds = new Set(
+      codingResults.filter((c) => c.skipped).map((c) => c.problemId),
+    );
+    const techNotes =
+      skippedCodingIds.size > 0
+        ? [
+            ...techCorrectnessNotes.filter(
+              (n) => n.questionId && skippedCodingIds.has(n.questionId),
+            ),
+            ...llmTechNotes.filter(
+              (n) => !n.questionId || !skippedCodingIds.has(n.questionId),
+            ),
+          ]
+        : llmTechNotes.length
+          ? llmTechNotes
+          : techCorrectnessNotes;
 
     return {
       overallSummary: ensureIntegritySummary(
