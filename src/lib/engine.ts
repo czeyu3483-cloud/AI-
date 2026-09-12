@@ -1,4 +1,5 @@
 import { INTEGRITY_END_UTTERANCE, PRESSURE_CONFIG, SKIP_SOFT_UTTERANCE } from "./config";
+import { matchReplyBank } from "./replyBank";
 import { RD_QUESTIONS } from "./questions/rd";
 import type {
   AbilityTag,
@@ -159,6 +160,58 @@ export function decideTurn(input: {
   const pendingTags: AbilityTag[] = [];
   if (input.answer.trim()) rt.userAnswers.push(input.answer.trim());
 
+  // 固定反应库优先：命中则原样回复（1–30；31–100 TODO 见 replyBank.ts）
+  const bankHit = matchReplyBank(input.answer, { hintCount: rt.hintCount });
+  if (bankHit) {
+    signals.replyBankId = bankHit.id;
+    if (bankHit.flags.endInterview) {
+      pendingTags.push("role_mismatch_suspected");
+      signals.integrityBreach = true;
+      if (pendingTags.length) rt.tags = Array.from(new Set([...rt.tags, ...pendingTags]));
+      return {
+        action: "FINISH",
+        utterance: bankHit.reply,
+        questionId: rt.question.id,
+        followUpCount: rt.followUpCount,
+        hintCount: rt.hintCount,
+        reframeCount: rt.reframeCount,
+        signals,
+        pendingTags,
+        done: true,
+        verbatim: true,
+      };
+    }
+    if (bankHit.flags.hintOnce) {
+      rt.hintCount += 1;
+      pendingTags.push("weak_independent_problem_solving");
+      return {
+        action: "REFRAME",
+        utterance: bankHit.reply,
+        questionId: rt.question.id,
+        followUpCount: rt.followUpCount,
+        hintCount: rt.hintCount,
+        reframeCount: rt.reframeCount,
+        signals: { ...signals, askedForHint: true, answerRequestCount: rt.answerRequestCount },
+        pendingTags,
+        verbatim: true,
+      };
+    }
+    // 常规追问式命中：同题继续，话术不润色
+    if (pressureOf(rt) < cfg.maxPressurePerQuestion) {
+      rt.followUpCount += 1;
+    }
+    return {
+      action: "FOLLOW_UP_OWNERSHIP",
+      utterance: bankHit.reply,
+      questionId: rt.question.id,
+      followUpCount: rt.followUpCount,
+      hintCount: rt.hintCount,
+      reframeCount: rt.reframeCount,
+      signals,
+      verbatim: true,
+    };
+  }
+
   // 简历/经历不实：真人面试官会直接结束，而不是继续控场套话
   if (signals.integrityBreach) {
     pendingTags.push("role_mismatch_suspected");
@@ -173,6 +226,7 @@ export function decideTurn(input: {
       signals,
       pendingTags,
       done: true,
+      verbatim: true,
     };
   }
 

@@ -43,7 +43,8 @@ export async function POST(req: Request) {
       questionPrompt: q.prompt,
       userAnswer: body.answer,
       tone: session.config.tone,
-      skipPolish: Boolean(decision.signals.integrityBreach),
+      // replyBank / 诚信结束：保留原句，不做润色改写
+      skipPolish: Boolean(decision.verbatim || decision.signals.integrityBreach),
     });
     decision.utterance = polished.text;
 

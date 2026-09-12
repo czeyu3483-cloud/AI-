@@ -82,6 +82,8 @@ export type TurnSignals = {
   tooShort?: boolean;
   /** 主动承认简历/项目造假或乱写 */
   integrityBreach?: boolean;
+  /** 命中 replyBank 条目 id（1–30；31–100 待补） */
+  replyBankId?: number;
 };
 
 export type QuestionRuntime = {
@@ -147,4 +149,6 @@ export type TurnDecision = {
   signals: TurnSignals;
   pendingTags?: AbilityTag[];
   done?: boolean;
+  /** replyBank 命中：下游跳过润色，原样播报 */
+  verbatim?: boolean;
 };
