@@ -8,7 +8,7 @@ import type { CodingRunResult } from "@/lib/types";
 
 /**
  * 编程环节提交：跑测 → 记入 session → 推进下一题或结束并出反馈。
- * 也可 skip: true 跳过（不记硬性失败，正常收尾）。
+ * 也可 skip: true 表示本次先不练这道题、继续面试（不记硬性失败）。
  */
 export async function POST(req: Request) {
   try {
@@ -54,14 +54,14 @@ export async function POST(req: Request) {
         total: problem.tests.length,
         passedCount: 0,
         failedTests: [],
-        complexityNotes: body.notes || "（已跳过）",
+        complexityNotes: body.notes || "（本次先不练这道题）",
         skipped: true,
         ranAt: new Date().toISOString(),
       };
       session.codingResults = [...(session.codingResults || []), codingResult];
       pushEvent(session, "coding_skipped", codingResult);
       if (rt) {
-        rt.userAnswers.push("【编程跳过】候选人选择跳过本题");
+        rt.userAnswers.push("【编程】候选人选择本次先不练这道题、继续面试");
       }
     } else {
       codingResult = runCodingSubmission({
@@ -94,11 +94,11 @@ export async function POST(req: Request) {
       done = true;
       action = body.skip ? "SKIP_SOFT" : "FINISH";
       if (body.skip) {
-        utterance = "好，编程题先跳过。本场问题到这里，我来整理结构化复盘。";
+        utterance = "好的，那我们看下一个问题。本场问题到这里，我来整理结构化复盘。";
       } else {
         utterance = codingResult.passed
           ? "编程题跑测通过了，本场问题到这里。我来整理结构化复盘。"
-          : `编程结果我记下了（${codingResult.passedCount}/${codingResult.total}）。本场到这里，我来整理复盘。`;
+          : `好，编程环节先到这里（${codingResult.passedCount}/${codingResult.total}）。本场到这里，我来整理复盘。`;
       }
     } else {
       session.currentIndex = nextIndex;
@@ -110,11 +110,11 @@ export async function POST(req: Request) {
           : "";
       if (body.skip) {
         action = "SKIP_SOFT";
-        utterance = `好，编程题先跳过。${bridge}${next.question.prompt}`;
+        utterance = `行，那我们继续。${bridge}${next.question.prompt}`;
       } else {
         utterance = codingResult.passed
           ? `编程用例过了。${bridge}${next.question.prompt}`
-          : `编程结果记下了（${codingResult.passedCount}/${codingResult.total}）。${bridge}${next.question.prompt}`;
+          : `好的，那我们看下一个问题。${bridge}${next.question.prompt}`;
         action = "ASK";
       }
     }

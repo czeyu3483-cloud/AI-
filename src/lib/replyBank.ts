@@ -104,7 +104,7 @@ export const REPLY_BANK: ReplyBankEntry[] = [
   },
   {
     id: 29,
-    patterns: [/这题能跳过吗/, /能跳过吗/, /可以跳过吗/],
+    patterns: [/这题能跳过吗/, /能跳过吗/, /可以跳过吗/, /先不练/, /不想做这道/],
     reply: "没有标准答案，你谈谈你的思考过程也行。",
     action: "FORMULA_DEFLECT",
   },

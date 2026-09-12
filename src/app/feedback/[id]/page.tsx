@@ -138,7 +138,7 @@ export default function FeedbackPage() {
                     <p className="font-medium">
                       {cr.title}：
                       {cr.skipped
-                        ? "已跳过"
+                        ? "本次未练"
                         : cr.passed
                           ? "通过"
                           : "未全过"}

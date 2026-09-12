@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { answerLimitsForAction } from "@/lib/config";
 import { getCodingProblem } from "@/lib/codingProblems";
-import { analyzeResumeConsistency, generateFeedback, polishUtterance } from "@/lib/deepseek";
+import {
+  analyzeResumeConsistency,
+  analyzeTopicRelevance,
+  generateFeedback,
+  polishUtterance,
+} from "@/lib/deepseek";
 import { decideTurn, phaseOf } from "@/lib/engine";
 import { resumeContextForPolish } from "@/lib/resumeConflict";
 import { getSession, pushEvent, saveSession } from "@/lib/store";
@@ -54,18 +59,25 @@ export async function POST(req: Request) {
       Boolean(currentRt && currentRt.resumeConflictProbeCount > 0) ||
       Boolean(session.pendingConflictChallenge);
 
-    const resumeAnalysis = await analyzeResumeConsistency({
-      answer: body.answer || "",
-      resume: session.resume,
-      question: currentRt?.question,
-      alreadyChallenged,
-    });
+    const [resumeAnalysis, topicRelevance] = await Promise.all([
+      analyzeResumeConsistency({
+        answer: body.answer || "",
+        resume: session.resume,
+        question: currentRt?.question,
+        alreadyChallenged,
+      }),
+      analyzeTopicRelevance({
+        answer: body.answer || "",
+        question: currentRt?.question,
+      }),
+    ]);
 
     const decision = decideTurn({
       session,
       answer: body.answer || "",
       silenceStuck: Boolean(body.silenceStuck),
       resumeAnalysis,
+      topicRelevance,
     });
 
     const shouldEnd =

@@ -20,6 +20,12 @@ import {
   resumeJsonForConsistency,
   shouldAnalyzeResumeConsistency,
 } from "./resumeConflict";
+import {
+  extractQuestionFocus,
+  heuristicTopicRelevance,
+  type TopicRelevanceResult,
+} from "./offTopic";
+import { scoreSubjectAnswer } from "./subjectQuestions";
 import type {
   AbilityTag,
   CandidateLevel,
@@ -78,6 +84,18 @@ function extractJsonObject(raw: string): Record<string, unknown> {
 
 export function sanitizeUtterance(text: string, fallback: string) {
   let out = text.replace(/\s+/g, " ").trim();
+  if (!out) return fallback;
+  // 禁记录腔与当场判对错
+  out = out
+    .replace(/好的?[，,]?\s*我先记下了[。.]?/g, "好的，那我们看下一个问题。")
+    .replace(/我记录一下你的回答[。.]?/g, "")
+    .replace(/记下了你的回答[。.]?/g, "")
+    .replace(/我记下了[。.]?/g, "")
+    .replace(/这(道题|个)答对了[。.]?/g, "")
+    .replace(/回答正确[。.]?/g, "")
+    .replace(/回答错误[。.]?/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
   if (!out) return fallback;
   if (((out.match(/[？?]/g) || []).length) > 1) {
     const parts = out.split(/(?<=[？?])/);
@@ -301,6 +319,68 @@ export async function analyzeResumeConsistency(input: {
       utterance: utterance.slice(0, 140),
       resumeExcerpt: String(json.resumeExcerpt || heuristicHit?.resumeExcerpt || "").slice(0, 200),
       source: "llm",
+    };
+  } catch {
+    return heuristic;
+  }
+}
+
+/**
+ * 切题判断：DeepSeek 优先；失败/无 key 回落启发式。
+ * 仅输出是否切题，不生成长文。
+ */
+export async function analyzeTopicRelevance(input: {
+  answer: string;
+  question?: Question | null;
+}): Promise<TopicRelevanceResult> {
+  const focus = extractQuestionFocus(input.question);
+  const heuristic = heuristicTopicRelevance(input.answer, input.question);
+  if (!input.question || !input.answer.trim()) return heuristic;
+
+  // 自我介绍不跑题判定
+  if (input.question.phase === "self_intro" || input.question.isSelfIntro) {
+    return { offTopic: false, focus, source: "heuristic" };
+  }
+
+  const c = client();
+  if (!c) return heuristic;
+
+  try {
+    const completion = await c.chat.completions.create({
+      model: modelName(),
+      temperature: 0.1,
+      max_tokens: 120,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content:
+            "判断候选人回答是否切题。输出 JSON：{relevant:boolean, offTopic:boolean, focus:string, reason:string}。" +
+            "问项目经历却大谈爱好/无关八卦 → offTopic=true；略空泛但仍围绕题目 → offTopic=false。" +
+            "focus 用短中文概括「我问的是什么」。",
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            question: input.question.prompt,
+            phase: input.question.phase,
+            intent: input.question.intent,
+            answer: input.answer.slice(0, 600),
+          }),
+        },
+      ],
+      ...thinkingExtra(),
+    });
+    const raw = completion.choices[0]?.message?.content?.trim() || "";
+    const json = extractJsonObject(raw);
+    const offTopic =
+      Boolean(json.offTopic) ||
+      (json.relevant === false && json.offTopic !== false);
+    return {
+      offTopic,
+      focus: String(json.focus || focus).slice(0, 40) || focus,
+      source: "llm",
+      reason: String(json.reason || "").slice(0, 120),
     };
   } catch {
     return heuristic;
@@ -621,11 +701,26 @@ function collectTechCorrectnessNotes(session: InterviewSession): TechCorrectness
     notes.push({
       questionId: cr.problemId,
       note: cr.skipped
-        ? "编程题已跳过（不记硬性失败）"
+        ? "编程题本次未练习（不记硬性失败）"
         : cr.passed
           ? `编程用例全过（${cr.passedCount}/${cr.total}）${cr.complexityNotes ? `；${cr.complexityNotes}` : ""}`
           : `编程未全过（${cr.passedCount}/${cr.total}）${cr.error ? `；${cr.error}` : ""}`,
       severity: cr.skipped || cr.passed ? "info" : "warn",
+    });
+  }
+  // 学科题：对照标准答案/评判标准写入备注
+  for (const rt of session.runtimes) {
+    if (!rt.question.subjectQuestionId || !rt.question.standardAnswer) continue;
+    const ans = rt.userAnswers.join("\n");
+    const scored = scoreSubjectAnswer(ans, {
+      prompt: rt.question.prompt,
+      standardAnswer: rt.question.standardAnswer,
+      gradingCriteria: rt.question.gradingCriteria || "",
+    });
+    notes.push({
+      questionId: rt.question.id,
+      note: `【${rt.question.subjectCategory || "专业题"}】反馈评分 ${scored.score}/5。标准答案要点：${rt.question.standardAnswer.slice(0, 80)}…；${scored.evidence}`,
+      severity: scored.score <= 2 ? "warn" : "info",
     });
   }
   return notes.slice(0, 12);
@@ -685,7 +780,7 @@ function buildNextRoundAdvice(input: {
     tips.push("补一道同类型手写题，并口述时间/空间复杂度");
   }
   if ((input.codingResults || []).some((c) => c.skipped)) {
-    tips.push("下一轮可补做一道简易手写题，熟悉边写边讲复杂度");
+    tips.push("下一轮若有时间，可补做一道简易手写题，熟悉边写边讲复杂度");
   }
   if (input.trackId === "hr_final") {
     tips.push("准备 2 个协作冲突小故事与「为什么研发」证据链");
@@ -741,7 +836,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
       `以下仍给出各能力维度评分供复盘（诚信维单独标为严重）；本报告不做录用结论。`
     : trackId === "hr_final"
       ? `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}）。整体完成了主流程；建议用具体协作场景、动机证据与上手计划证明适配度。本报告不做录用结论。`
-      : `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}）。按约 4 题推进（简历深挖→专业情景→编程可跳过）；建议继续用 WHY/规模/职责与边界证明实践深度。本报告不做录用结论。`;
+      : `本场为研发岗${trackLabel}练习（深度预期：${levelLabel}）。流程为自我介绍 + 约 4 题（简历深挖→学科专业题→编程，编程本次可不练）；建议继续用 WHY/规模/职责与边界证明实践深度。本报告不做录用结论。`;
 
   let dimensions = heuristicDimensionScores(
     session,
@@ -793,22 +888,35 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
       const tags = integrityBreach
         ? Array.from(new Set<AbilityTag>([...rt.tags, "role_mismatch_suspected"]))
         : rt.tags;
+      const ans = rt.userAnswers.join("\n") || "（未作答/卡壳）";
+      const subjectScored =
+        rt.question.subjectQuestionId && rt.question.standardAnswer
+          ? scoreSubjectAnswer(rt.userAnswers.join("\n"), {
+              prompt: rt.question.prompt,
+              standardAnswer: rt.question.standardAnswer,
+              gradingCriteria: rt.question.gradingCriteria || "",
+            })
+          : null;
       return {
         questionId: rt.question.id,
         prompt: rt.question.prompt,
-        userAnswer: rt.userAnswers.join("\n") || "（未作答/卡壳）",
+        userAnswer: ans,
         scores: rt.question.rubrics.map((r) => ({
           dimension: r.dimension,
           score: integrityBreach
             ? Math.min(2, vague ? 2 : rt.userAnswers.join("").length > 60 ? 2 : 1)
-            : vague
-              ? 2
-              : rt.userAnswers.join("").length > 60
-                ? 3
-                : 2,
+            : subjectScored
+              ? subjectScored.score
+              : vague
+                ? 2
+                : rt.userAnswers.join("").length > 60
+                  ? 3
+                  : 2,
           evidence: integrityBreach
             ? "诚信问题下本项参考分（已下调）"
-            : rt.userAnswers[0]?.slice(0, 80) || "信息不足",
+            : subjectScored
+              ? `${subjectScored.evidence}；标准答案：${(rt.question.standardAnswer || "").slice(0, 100)}`
+              : rt.userAnswers[0]?.slice(0, 80) || "信息不足",
         })),
         tags,
         improvements: integrityBreach
@@ -817,9 +925,15 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
               "每条经历准备可验证的个人动作、数据与复盘",
               "面试中绝不夸大、挂名或临场编造",
             ]
-          : trackId === "hr_final"
-            ? ["用一件具体事说明协作/动机", "讲清你当时怎么想、怎么做", "补上可验证结果或复盘"]
-            : ["补充个人职责边界", "说明取舍与失效场景", "用数据或现象验证结果"],
+          : subjectScored
+            ? [
+                `对照标准答案复习：${(rt.question.standardAnswer || "").slice(0, 80)}`,
+                rt.question.gradingCriteria || "按评判标准补齐关键要点",
+                "面试当场不判对错，复盘时把概念讲扎实",
+              ]
+            : trackId === "hr_final"
+              ? ["用一件具体事说明协作/动机", "讲清你当时怎么想、怎么做", "补上可验证结果或复盘"]
+              : ["补充个人职责边界", "说明取舍与失效场景", "用数据或现象验证结果"],
       };
     }),
     dimensions,
@@ -877,6 +991,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
             "输出复盘 JSON：{overallSummary,recommendation:\"推荐通过\"|\"保留待定\"|\"不推荐\",nextRoundAdvice:string[],perQuestion:[{questionId,prompt,userAnswer,scores:[{dimension,score,evidence}],tags,improvements}],dimensions:[{dimension,score,band,weight,evidence}],topActions,techCorrectnessNotes:[{questionId,note,severity}]}。" +
             "分数1-5；band 为 强/中/弱/风险/严重（严重仅用于诚信维）。不要宣判录用，但必须给 recommendation 练习建议。" +
             "即使诚信失败也必须给各维度分数，禁止只写结束语。" +
+            "对 subjectQuestionId 学科题：必须对照 standardAnswer 与 gradingCriteria 打分，面试中未当场判对错。" +
             feedbackPolicyBlock({
               trackId,
               level,
@@ -893,6 +1008,7 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
             candidateLevel: level,
             style: session.config.styleResolved,
             sessionTags: session.sessionTags || [],
+            selfIntroText: session.selfIntroText || "",
             vagueInsufficientDetail: vague,
             authenticityRisk,
             integrityBreach,
@@ -918,6 +1034,10 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
               tags: rt.tags,
               hintLevel: rt.hintLevel,
               answerIndependence: rt.answerIndependence,
+              subjectQuestionId: rt.question.subjectQuestionId,
+              subjectCategory: rt.question.subjectCategory,
+              standardAnswer: rt.question.standardAnswer,
+              gradingCriteria: rt.question.gradingCriteria,
             })),
           }),
         },

@@ -30,7 +30,7 @@ export const DEMO_TRACKS: Array<{
   {
     id: "biz",
     label: "业务面",
-    hint: "约 4 题：简历深挖×2 → 专业情景 → 编程（可跳过）；追问 WHY/规模/职责，不复述简历已写事实",
+    hint: "先自我介绍，再约 4 题：简历深挖×2 → 学科专业题 → 编程（本次可不练、继续面试）；追问 WHY/规模/职责，不复述简历已写事实",
     enabled: true,
   },
   {
@@ -42,7 +42,7 @@ export const DEMO_TRACKS: Array<{
 ];
 
 /**
- * 业务面：约 4 主问题（简历深挖×2 → 专业情景 → 编程可跳过）。
+ * 业务面：自我介绍 + 约 4 主问题（简历深挖×2 → 学科专业题 → 编程本次可不练）。
  * 偏技术深挖，允许更多 FOLLOW_UP / 分级提示。
  */
 export const PRESSURE_CONFIG: BehaviorConfig = {
@@ -55,7 +55,8 @@ export const PRESSURE_CONFIG: BehaviorConfig = {
   maxHintsPerQuestion: 3,
   maxReframesPerQuestion: 1,
   minAnswerChars: 30,
-  questionsPerSession: 4,
+  /** 含开场自我介绍共 5 个环节（介绍 + 4 主问题） */
+  questionsPerSession: 5,
   allowFirstHintOnRequest: true,
   answerSoftLimitSec: 90,
   answerHardLimitSec: 140,
@@ -83,11 +84,11 @@ export function configForTrack(trackId: TrackId): BehaviorConfig {
   return trackId === "hr_final" ? { ...HR_FINAL_CONFIG } : { ...PRESSURE_CONFIG };
 }
 
-export const SKIP_SOFT_UTTERANCE = "好，这题我先记下了，我们换一个。";
+export const SKIP_SOFT_UTTERANCE = "好的，那我们看下一个问题。";
 
 /** 空泛追问过一次后仍不够细 → 软换题（不机械追加「细节可以补充」） */
 export const VAGUE_SOFT_SKIP_UTTERANCE =
-  "好，这题我先记下了，我们换一个。";
+  "行，那我们继续。";
 
 /** 空泛时的唯一一次短探（仅当真薄时使用） */
 export const VAGUE_PROBE_UTTERANCE =
@@ -145,7 +146,10 @@ export const POLICY_LEADER_DEFLECT = "这个面试环节不好说，我们先回
 export const POLICY_THINKING_WAIT = "好的。";
 
 /** 全局控场：答太长/跑火车 → 软换下一题 */
-export const POLICY_RAMBLING_NEXT = "那我们先看下一个问题。";
+export const POLICY_RAMBLING_NEXT = "好的，那我们看下一个问题。";
+
+/** 学科专业题作答后的过渡（不宣判对错） */
+export const SUBJECT_ADVANCE_UTTERANCE = "好的，那我们看下一个问题。";
 
 /** @deprecated 开场白改为 persona.buildOpeningLine，保留常量以免旧引用报错 */
 export const INTRO_PRESSURE = "";
@@ -164,6 +168,9 @@ export const RED_FLAG_PATTERNS = [
   /压力面/,
   /模拟面试/,
   /数字人/,
+  /我先记下了/,
+  /我记录一下/,
+  /记下了你的回答/,
 ];
 
 export const SAMPLE_RESUME = `张三

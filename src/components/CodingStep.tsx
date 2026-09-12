@@ -40,12 +40,12 @@ export function CodingStep({ problem, sessionId, disabled, onSubmitted }: Props)
           sessionId,
           problemId: problem.id,
           code: opts?.skip ? "" : code,
-          notes: opts?.skip ? "（已跳过）" : notes,
+          notes: opts?.skip ? "（本次先不练这道题）" : notes,
           skip: Boolean(opts?.skip),
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || (opts?.skip ? "跳过失败" : "提交失败"));
+      if (!res.ok) throw new Error(data.error || (opts?.skip ? "继续面试失败" : "提交失败"));
       const result = data.codingResult as CodingRunResult;
       setLastResult(result);
       onSubmitted({
@@ -59,7 +59,7 @@ export function CodingStep({ problem, sessionId, disabled, onSubmitted }: Props)
         phase: data.phase,
       });
     } catch (e) {
-      setError(e instanceof Error ? e.message : opts?.skip ? "跳过失败" : "提交失败");
+      setError(e instanceof Error ? e.message : opts?.skip ? "继续面试失败" : "提交失败");
     } finally {
       setBusy(false);
     }
@@ -71,7 +71,9 @@ export function CodingStep({ problem, sessionId, disabled, onSubmitted }: Props)
         <p className="text-xs tracking-[0.16em] text-[var(--accent)]">CODING</p>
         <h2 className="text-lg font-semibold">{title}</h2>
         <p className="text-sm leading-6 text-[var(--muted)]">{problem.prompt}</p>
-        <p className="text-xs text-[var(--muted)]">不想做也可以跳过，不影响正常收尾。</p>
+        <p className="text-xs text-[var(--muted)]">
+          若本次只想完成面试流程、不练这道题，可选择「本次先不练这道题 / 继续面试」。
+        </p>
       </header>
 
       <label className="block text-xs text-[var(--muted)]">
@@ -112,7 +114,7 @@ export function CodingStep({ problem, sessionId, disabled, onSubmitted }: Props)
           onClick={() => void submit({ skip: true })}
           className="rounded-full border border-[var(--line)] px-5 py-2.5 text-sm text-[var(--muted)] disabled:opacity-50"
         >
-          跳过
+          本次先不练这道题 / 继续面试
         </button>
         {lastResult ? (
           <span
@@ -125,7 +127,7 @@ export function CodingStep({ problem, sessionId, disabled, onSubmitted }: Props)
             }`}
           >
             {lastResult.skipped
-              ? "已跳过"
+              ? "本次未练这道题"
               : lastResult.passed
                 ? `通过 ${lastResult.passedCount}/${lastResult.total}`
                 : `未全过 ${lastResult.passedCount}/${lastResult.total}`}

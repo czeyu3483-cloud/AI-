@@ -60,6 +60,7 @@ export type ResumeProfile = {
 
 /** 业务面显式阶段（约 30–40 分钟体感） */
 export type InterviewPhase =
+  | "self_intro"
   | "resume_research"
   | "resume_deep_dive"
   | "professional_knowledge"
@@ -104,9 +105,16 @@ export type Question = {
   rubrics: Array<{ dimension: string; weight: number; good: string; poor: string }>;
   referencePoints: string[];
   fromResume?: boolean;
-  /** 编程题：跳过语音主路径，走编辑器提交 */
+  /** 开场自我介绍（计入流程，但不等同于 4 道主问题） */
+  isSelfIntro?: boolean;
+  /** 编程题：可不练本题、继续面试；走编辑器提交 */
   isCoding?: boolean;
   codingProblemId?: string;
+  /** 学科专业题库条目 id（Q3）；标准答案仅用于反馈打分 */
+  subjectQuestionId?: string;
+  subjectCategory?: string;
+  standardAnswer?: string;
+  gradingCriteria?: string;
 };
 
 export type BehaviorConfig = {
@@ -165,6 +173,8 @@ export type TurnSignals = {
   resumeConflictLevel?: ResumeConflictLevel;
   /** 冲突解释归类 */
   conflictExplainOutcome?: ConflictExplainOutcome;
+  /** 回答明显偏离当前问题焦点 */
+  offTopic?: boolean;
 };
 
 export type QuestionRuntime = {
@@ -181,6 +191,8 @@ export type QuestionRuntime = {
   transferProbeCount: number;
   /** 本题「简历冲突」挑战次数（上限 1） */
   resumeConflictProbeCount: number;
+  /** 本题跑题纠偏次数（上限 1，再空泛则走软换题） */
+  offTopicProbeCount: number;
   /** 当前分级提示档位 0=未提示 */
   hintLevel: 0 | 1 | 2 | 3;
   /** 本题作答独立性（复盘用） */
@@ -247,7 +259,7 @@ export type CodingRunResult = {
   error?: string;
   durationMs?: number;
   ranAt: string;
-  /** 候选人主动跳过编程题（不记硬性失败） */
+  /** 候选人选择本次先不练编程题（不记硬性失败） */
   skipped?: boolean;
 };
 
@@ -330,6 +342,8 @@ export type InterviewSession = {
   codingResults?: CodingRunResult[];
   /** 待裁决的冲突挑战（等下一答解释） */
   pendingConflictChallenge?: ResumeConflictRecord | null;
+  /** 开场自我介绍原文（供后续简历深挖 grounding） */
+  selfIntroText?: string;
 };
 
 export type TurnDecision = {

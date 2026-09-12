@@ -107,6 +107,7 @@ export async function POST(req: Request) {
       resumeConflicts: [],
       codingResults: [],
       pendingConflictChallenge: null,
+      selfIntroText: "",
     };
     pushEvent(session, "start", {
       roleId,

@@ -6,6 +6,7 @@ import {
   POLICY_THINKING_WAIT,
   PRESSURE_CONFIG,
   SKIP_SOFT_UTTERANCE,
+  SUBJECT_ADVANCE_UTTERANCE,
   VAGUE_SOFT_SKIP_UTTERANCE,
   configForTrack,
 } from "./config";
@@ -18,6 +19,12 @@ import {
   pickCoachLine,
   RESUME_CONFLICT_GENERIC_UTTERANCE,
 } from "./interviewerPolicy";
+import {
+  extractQuestionFocus,
+  heuristicTopicRelevance,
+  pickOffTopicCorrection,
+  type TopicRelevanceResult,
+} from "./offTopic";
 import { phaseLabel } from "./phases";
 import { matchReplyBank } from "./replyBank";
 import {
@@ -27,6 +34,7 @@ import {
   detectResumeConflict,
   utteranceForExplainOutcome,
 } from "./resumeConflict";
+import { pickSubjectQuestion } from "./subjectQuestions";
 import {
   pickAdvancePrefix,
   pickFollowUpTemplate,
@@ -130,11 +138,29 @@ export function buildQuestionQueue(
     return [...fromResume, ...fromExp, ...hrBank].slice(0, cfg.questionsPerSession);
   }
 
-  // —— 业务面：约 4 主问题 ——
-  // Q1–Q2 简历深挖（WHY / 规模 / 所有权 / 失败）；禁止复述简历已写事实
-  // Q3 专业情景；Q4 编程（可跳过）
+  // —— 业务面：自我介绍 + 约 4 主问题 ——
+  // 0 自我介绍；1–2 简历深挖（结合简历自然点名）；3 学科专业题库；4 编程（本次可不练）
+  const introQ: Question = {
+    id: "biz_self_intro",
+    roleId: "rd_general",
+    trackId: "biz",
+    phase: "self_intro",
+    prompt: "先做个简单的自我介绍吧，一两分钟就行，重点说说你的背景和最近在做的事。",
+    intent: "self_intro",
+    followUpHints: ["背景", "经历", "动机"],
+    rubrics: [
+      { dimension: "communication", weight: 0.6, good: "结构清楚、重点突出", poor: "东拉西扯" },
+      { dimension: "fit", weight: 0.4, good: "与岗位相关", poor: "完全无关" },
+    ],
+    referencePoints: [],
+    fromResume: false,
+    isSelfIntro: true,
+  };
+
   const primary = resume?.projects?.[0];
   const secondary = resume?.projects?.[1];
+  const exp0 = resume?.experiences?.[0];
+  const skill0 = (resume?.skills || [])[0];
   const stackHint = (primary?.stack || resume?.skills || []).slice(0, 4);
   const stackKnown = stackHint.length > 0;
   const digTarget = primary?.name;
@@ -153,8 +179,8 @@ export function buildQuestionQueue(
       trackId: "biz",
       phase: "resume_deep_dive",
       prompt: stackKnown
-        ? `「${digTarget}」里你用过${stackHint.slice(0, 2).join("、")}——为什么选它，而不是${altStack}？数据量大概多大，列表/状态这类难点你怎么处理的？`
-        : `「${digTarget}」里最关键的一次技术取舍是什么？为什么这么选，规模与约束大概怎样？`,
+        ? `你简历里写了做过「${digTarget}」项目，我注意到上面写到${stackHint.slice(0, 2).join("、")}——为什么选它，而不是${altStack}？数据量大概多大，列表/状态这类难点你怎么处理的？`
+        : `你简历里写了做过「${digTarget}」项目，能具体说说你在里面负责什么吗？最关键的一次技术取舍是什么，规模与约束大概怎样？`,
       intent: "resume_dig_why_scale",
       followUpHints: ["取舍理由", "规模", "虚拟列表/状态", ...(primary.highlights || [])],
       rubrics: [
@@ -169,7 +195,7 @@ export function buildQuestionQueue(
       roleId: "rd_general",
       trackId: "biz",
       phase: "resume_deep_dive",
-      prompt: `再往下挖「${digTarget}」：哪个模块是你个人真正负责的？出过错或失败方案吗，你怎么收的？`,
+      prompt: `再围绕简历上的「${digTarget}」往下挖：哪个模块是你个人真正负责的？出过错或失败方案吗，你怎么收的？`,
       intent: "resume_dig_ownership",
       followUpHints: ["模块边界", "失败", "协作", ...(primary.highlights || [])],
       rubrics: [
@@ -185,7 +211,7 @@ export function buildQuestionQueue(
       roleId: "rd_general",
       trackId: "biz",
       phase: "resume_deep_dive",
-      prompt: `「${secondary.name}」里最难的一次取舍是什么？为什么这么选，规模大概怎样？`,
+      prompt: `我看你简历里提到「${secondary.name}」，能具体说说你在里面负责什么吗？最难的一次取舍是什么，规模大概怎样？`,
       intent: "resume_dig_why_scale",
       followUpHints: ["取舍", "规模", ...(secondary.highlights || [])],
       rubrics: [
@@ -200,7 +226,7 @@ export function buildQuestionQueue(
       roleId: "rd_general",
       trackId: "biz",
       phase: "resume_deep_dive",
-      prompt: `「${secondary.name}」里你个人真正负责哪一块？有没有失败方案，你怎么收的？`,
+      prompt: `还是「${secondary.name}」：你个人真正负责哪一块？有没有失败方案，你怎么收的？`,
       intent: "resume_dig_ownership",
       followUpHints: ["职责", "失败", ...(secondary.highlights || [])],
       rubrics: [
@@ -210,16 +236,15 @@ export function buildQuestionQueue(
       referencePoints: [],
       fromResume: true,
     });
-  } else if (resume?.experiences?.[0]) {
-    const e = resume.experiences[0];
+  } else if (exp0) {
     digs.push({
       id: "biz_dig_exp_why",
       roleId: "rd_general",
       trackId: "biz",
       phase: "resume_deep_dive",
-      prompt: `你在${e.org || "上一段经历"}担任${e.title || "相关角色"}时，最关键的一次技术或方案取舍是什么？为什么这么选？`,
+      prompt: `我看你的简历里有提到在${exp0.org || "相关单位"}${/实习/.test(`${exp0.title || ""}${exp0.period || ""}`) ? "实习" : "工作"}过，那我想问一下：担任${exp0.title || "相关角色"}时，最关键的一次技术或方案取舍是什么？为什么这么选？`,
       intent: "resume_dig_why_scale",
-      followUpHints: ["取舍理由", ...(e.highlights || [])],
+      followUpHints: ["取舍理由", ...(exp0.highlights || [])],
       rubrics: [
         { dimension: "tradeoff", weight: 0.5, good: "讲清为何选", poor: "无取舍" },
         { dimension: "depth", weight: 0.5, good: "有过程与约束", poor: "空谈" },
@@ -232,9 +257,11 @@ export function buildQuestionQueue(
       roleId: "rd_general",
       trackId: "biz",
       phase: "resume_deep_dive",
-      prompt: `同一段经历里，哪件事是你独立闭环的？出过错吗，你怎么定位和收尾的？`,
+      prompt: skill0
+        ? `我注意到你简历上写熟练掌握${skill0}，结合刚才那段经历：哪件事是你独立闭环的？出过错吗，你怎么定位和收尾的？`
+        : `同一段经历里，哪件事是你独立闭环的？出过错吗，你怎么定位和收尾的？`,
       intent: "resume_dig_ownership",
-      followUpHints: ["个人动作", "失败", ...(e.highlights || [])],
+      followUpHints: ["个人动作", "失败", ...(exp0.highlights || [])],
       rubrics: [
         { dimension: "ownership", weight: 0.5, good: "落到个人动作", poor: "空泛描述" },
         { dimension: "pitfall", weight: 0.5, good: "有失败与复盘", poor: "只谈成功" },
@@ -258,24 +285,37 @@ export function buildQuestionQueue(
     });
   }
 
-  // Q3：一道专业/情景题；优先故障/推进/性能，避开与 Q1–Q2 重复的取舍题与事实复述题
-  const preferredKnowledgeIds = ["rd_q3", "rd_q6", "rd_q4", "rd_q5", "rd_q7"];
-  const knowledgeSeed =
-    preferredKnowledgeIds
-      .map((id) => RD_QUESTIONS.find((q) => q.id === id))
-      .find(Boolean) ||
-    RD_QUESTIONS.find(
-      (q) =>
-        q.id !== "rd_q1" &&
-        q.id !== "rd_q2" &&
-        !/用了什么|什么框架|什么技术栈|介绍一个你最有代表/.test(q.prompt),
-    ) ||
-    RD_QUESTIONS[5]!;
+  // Q3：学科专业题库（高等代数/线性代数/概率论/数理统计/微积分）；当场不判对错
+  const resumeBlob = [
+    resume?.rawText || "",
+    resume?.summary || "",
+    ...(resume?.education || []).map((e) => `${e.major || ""} ${e.degree || ""}`),
+    ...(resume?.skills || []),
+  ].join(" ");
+  const subject = pickSubjectQuestion(
+    (resume?.projects?.length || 0) * 17 + (resume?.skills?.length || 0) * 3 + 11,
+    resumeBlob,
+  );
   const knowledgeQ: Question = {
-    ...knowledgeSeed,
-    id: "biz_knowledge_1",
+    id: `biz_subject_${subject.id}`,
+    roleId: "rd_general",
+    trackId: "biz",
     phase: "professional_knowledge",
+    prompt: skill0
+      ? `我注意到你简历上的专业背景，想问一道${subject.category}相关的问题：${subject.prompt}`
+      : `接下来一道${subject.category}的问题：${subject.prompt}`,
+    intent: "subject_bank",
+    followUpHints: [subject.category],
+    rubrics: [
+      { dimension: "subject_accuracy", weight: 0.6, good: "要点对齐标准答案", poor: "概念错误或空白" },
+      { dimension: "subject_clarity", weight: 0.4, good: "表述清楚可检验", poor: "含糊不清" },
+    ],
+    referencePoints: [],
     fromResume: false,
+    subjectQuestionId: subject.id,
+    subjectCategory: subject.category,
+    standardAnswer: subject.standardAnswer,
+    gradingCriteria: subject.gradingCriteria,
   };
 
   const codingProblem = pickCodingProblem((resume?.projects?.length || 0) + 1);
@@ -284,7 +324,7 @@ export function buildQuestionQueue(
     roleId: "rd_general",
     trackId: "biz",
     phase: "coding",
-    prompt: `编程环节：${codingProblem.title}。请在编辑器里手写实现并跑测（也可跳过）。${codingProblem.prompt}`,
+    prompt: `编程环节：${codingProblem.title}。请在编辑器里手写实现并跑测；如果这次不想练这道题，也可以先不练、继续面试。${codingProblem.prompt}`,
     intent: "coding_exercise",
     followUpHints: [codingProblem.complexityHint || "复杂度"],
     rubrics: [
@@ -297,12 +337,34 @@ export function buildQuestionQueue(
     codingProblemId: codingProblem.id,
   };
 
-  const target = Math.max(2, cfg.questionsPerSession);
-  // 保证编程始终是最后一题，且总数 ≈ questionsPerSession（默认 4）
-  const aheadBudget = Math.max(1, target - 1);
-  const digBudget = Math.min(2, Math.max(1, aheadBudget - 1));
-  const ahead = [...digs.slice(0, digBudget), knowledgeQ].slice(0, aheadBudget);
-  return [...ahead, codingQ];
+  // 自我介绍 + 4 主问题（深挖×2 + 学科题 + 编程）
+  const main = [...digs.slice(0, 2), knowledgeQ, codingQ];
+  return [introQ, ...main];
+}
+
+/** 自我介绍结束后，用介绍细节 enrichment 后续深挖题干 */
+export function enrichDigsWithSelfIntro(session: InterviewSession) {
+  const intro = (session.selfIntroText || "").trim();
+  if (!intro) return;
+  const resumeNames = [
+    ...(session.resume?.projects || []).map((p) => p.name),
+    ...(session.resume?.experiences || []).map((e) => e.org || "").filter(Boolean),
+  ].filter(Boolean) as string[];
+  const fromResume = resumeNames.find((n) => n && intro.includes(n));
+  const clip =
+    intro
+      .replace(/\s+/g, "")
+      .match(/(?:在|于)?([\u4e00-\u9fff]{2,12}(?:公司|大学|学院)?|(?:负责|参与)[\u4e00-\u9fff]{2,10})/g) ||
+    [];
+  const hook = fromResume || clip[0]?.replace(/^(在|于)/, "") || null;
+  if (!hook || hook.length < 2) return;
+  for (const rt of session.runtimes) {
+    if (rt.question.phase !== "resume_deep_dive") continue;
+    if (/刚才自我介绍|你刚提到/.test(rt.question.prompt)) continue;
+    rt.question.prompt = `结合你刚才自我介绍里提到的「${hook}」，以及简历：${rt.question.prompt}`;
+    const qi = session.queue.findIndex((q) => q.id === rt.question.id);
+    if (qi >= 0) session.queue[qi] = rt.question;
+  }
 }
 
 export function phaseOf(session: InterviewSession): InterviewPhase {
@@ -323,6 +385,7 @@ export function createRuntimes(queue: Question[]): QuestionRuntime[] {
     coachCount: 0,
     transferProbeCount: 0,
     resumeConflictProbeCount: 0,
+    offTopicProbeCount: 0,
     hintLevel: 0,
     userAnswers: [],
     tags: [],
@@ -582,15 +645,25 @@ function advance(
   session.currentIndex = nextIndex;
   const next = session.runtimes[nextIndex]!;
   session.currentPhase = next.question.phase || phaseOf(session);
+  // 学科题作答后：只用自然过渡，绝不暗示对错
+  const fromSubject =
+    current.question.phase === "professional_knowledge" ||
+    Boolean(current.question.subjectQuestionId);
   const prefix =
     via === "SKIP_SOFT"
       ? skipText || pickSkipSoftPrefix(seed)
-      : pickAdvancePrefix(seed);
+      : fromSubject
+        ? SUBJECT_ADVANCE_UTTERANCE
+        : pickAdvancePrefix(seed);
   // 阶段切换时简短提示（不赞美、不嘲讽）
   const prevPhase = current.question.phase;
   const nextPhase = next.question.phase;
   const phaseBridge =
-    prevPhase && nextPhase && prevPhase !== nextPhase
+    prevPhase &&
+    nextPhase &&
+    prevPhase !== nextPhase &&
+    prevPhase !== "self_intro" &&
+    !fromSubject
       ? `接下来进入${phaseLabel(nextPhase)}。`
       : "";
   return {
@@ -602,6 +675,39 @@ function advance(
     reframeCount: next.reframeCount,
     signals,
     pendingTags,
+  };
+}
+
+/** 跑题：最多纠偏 1 次；再偏/空泛走既有 soft-skip */
+function handleOffTopicCap(
+  session: InterviewSession,
+  rt: QuestionRuntime,
+  signals: TurnSignals,
+  pendingTags: AbilityTag[],
+  topic?: TopicRelevanceResult,
+): TurnDecision | null {
+  if (!signals.offTopic && !topic?.offTopic) return null;
+  signals.offTopic = true;
+  const focus = topic?.focus || extractQuestionFocus(rt.question);
+  if (rt.offTopicProbeCount >= 1) {
+    // 纠偏后仍跑题 → 视作不够切题，软换题（沿用 vague soft-skip 节奏）
+    pendingTags.push("vague_insufficient_detail");
+    addSessionTag(session, "vague_insufficient_detail");
+    return advance(session, "SKIP_SOFT", VAGUE_SOFT_SKIP_UTTERANCE, signals, pendingTags);
+  }
+  rt.offTopicProbeCount += 1;
+  rt.followUpCount += 1;
+  const utterance = pickOffTopicCorrection(focus, rt.offTopicProbeCount + session.currentIndex);
+  return {
+    action: "REFRAME",
+    utterance,
+    questionId: rt.question.id,
+    followUpCount: rt.followUpCount,
+    hintCount: rt.hintCount,
+    reframeCount: rt.reframeCount,
+    signals,
+    pendingTags: pendingTags.length ? pendingTags : undefined,
+    verbatim: true,
   };
 }
 
@@ -648,6 +754,8 @@ export function decideTurn(input: {
   silenceStuck?: boolean;
   /** 简历一致性 Agent（LLM 优先）；缺省时引擎内回落启发式 */
   resumeAnalysis?: ResumeConsistencyAnalysis;
+  /** 切题判断（LLM 优先 + 启发式） */
+  topicRelevance?: TopicRelevanceResult;
 }): TurnDecision {
   const { session } = input;
   const cfg = session.config;
@@ -688,7 +796,38 @@ export function decideTurn(input: {
 
   if (input.answer.trim()) rt.userAnswers.push(input.answer.trim());
 
+  // 自我介绍：落盘供后续深挖 grounding；足够长度则直接进入主问题
+  if (rt.question.isSelfIntro || rt.question.phase === "self_intro") {
+    if (input.answer.trim().length >= 20) {
+      session.selfIntroText = input.answer.trim();
+      enrichDigsWithSelfIntro(session);
+      return advance(session, "ASK", "", signals, pendingTags);
+    }
+    if (input.answer.trim().length > 0 && input.answer.trim().length < 20) {
+      rt.followUpCount += 1;
+      return {
+        action: "FOLLOW_UP_OWNERSHIP",
+        utterance: "再补充一点就好：你的教育/工作背景，以及最近一段相关经历。",
+        questionId: rt.question.id,
+        followUpCount: rt.followUpCount,
+        hintCount: rt.hintCount,
+        reframeCount: rt.reframeCount,
+        signals,
+        verbatim: true,
+      };
+    }
+  }
+
   // —— 全局政策优先（先于重追问）——
+
+  // 跑题检测（优先于充实推进；在 replyBank 之后处理元问题之前也可，但放在银行命中后更稳）
+  // 先处理银行与诚信等硬规则，再在追问段处理跑题——见下方 early off-topic
+  const topic =
+    input.topicRelevance ||
+    heuristicTopicRelevance(input.answer, rt.question);
+  if (topic.offTopic) {
+    signals.offTopic = true;
+  }
 
   // 1) 固定反应库：命中则原样回复（生产仅 1–30；诚信类可直接结束）
   // 注意：若库内曾映射「再说一遍」→ REFRAME，已被上方 REPEAT 覆盖
@@ -835,6 +974,22 @@ export function decideTurn(input: {
       signals,
       verbatim: true,
     };
+  }
+
+  // 4b) 跑题纠偏：不推进为完整作答
+  if (signals.offTopic || topic.offTopic) {
+    const capped = handleOffTopicCap(session, rt, signals, pendingTags, topic);
+    if (capped) return capped;
+  }
+
+  // 学科专业题：有实质作答则直接过渡下一题，当场不判对错、少追问
+  if (
+    (rt.question.phase === "professional_knowledge" || rt.question.subjectQuestionId) &&
+    input.answer.trim().length >= 20 &&
+    !signals.explicitGiveUp &&
+    !signals.stuckSubtype
+  ) {
+    return advance(session, "ASK", "", signals, pendingTags);
   }
 
   // 5) 答太长：直接 timebox 换题；中等啰嗦：先教练一次再听

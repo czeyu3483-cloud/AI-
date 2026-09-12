@@ -2,6 +2,8 @@ import type { InterviewPhase } from "./types";
 
 export function phaseLabel(phase: InterviewPhase): string {
   switch (phase) {
+    case "self_intro":
+      return "自我介绍";
     case "resume_research":
       return "简历调研";
     case "resume_deep_dive":

@@ -173,7 +173,7 @@ export default function HomePage() {
         </div>
         <p className="mt-3 text-xs text-[var(--muted)]">
           {DEMO_TRACKS.find((t) => t.id === trackId)?.hint ||
-            "业务面约 4 题深挖；HR终面暂不可选。"}
+            "业务面：自我介绍 + 约 4 题；HR终面暂不可选。"}
         </p>
       </section>
 

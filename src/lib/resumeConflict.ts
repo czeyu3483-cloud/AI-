@@ -424,13 +424,13 @@ export function utteranceForExplainOutcome(outcome: ConflictExplainOutcome): str
     case "ok_incomplete_resume":
       return "明白了，更像是简历表述不完整。我们按你刚才说的实际交付继续。";
     case "memory_fuzzy":
-      return "好，先记成经历记忆模糊。后面尽量只讲你现在还能核验的部分。";
+      return "好，后面尽量只讲你现在还能核验的部分。";
     case "chaotic_integrity_risk":
-      return "这个解释目前对不上，我会记一笔诚信风险，我们先换个角度继续。";
+      return "这个解释目前对不上，我会留意诚信风险，我们先换个角度继续。";
     case "admits_fabricate":
       return "那你先把简历改扎实了再来面试，今天就先到这里。";
     default:
-      return "先记下了，我们继续。";
+      return "行，那我们继续。";
   }
 }
 
