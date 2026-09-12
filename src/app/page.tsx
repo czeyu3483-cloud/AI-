@@ -1,12 +1,10 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 import { DEMO_ROLES, DEMO_STYLES, SAMPLE_RESUME } from "@/lib/config";
 import type { ResumeProfile, RoleId, StyleId } from "@/lib/types";
 
 export default function HomePage() {
-  const router = useRouter();
   const [roleId, setRoleId] = useState<RoleId>("rd_general");
   const [styleId, setStyleId] = useState<StyleId>("pressure");
   const [resumeText, setResumeText] = useState(SAMPLE_RESUME);
@@ -53,12 +51,15 @@ export default function HomePage() {
     try {
       let current = profile;
       if (!current) {
-        const parsed = await fetch("/api/resume/parse", {
+        const parsedRes = await fetch("/api/resume/parse", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text: resumeText }),
-        }).then((r) => r.json());
-        if (parsed.error) throw new Error(parsed.error);
+        });
+        const parsed = await parsedRes.json();
+        if (!parsedRes.ok || parsed.error) {
+          throw new Error(parsed.error || "简历解析失败");
+        }
         current = parsed.profile as ResumeProfile;
         setProfile(current);
       }
@@ -70,20 +71,25 @@ export default function HomePage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "开场失败");
+      if (!data.sessionId) throw new Error("未返回 sessionId");
 
-      sessionStorage.setItem(
-        `interview:${data.sessionId}`,
-        JSON.stringify({
-          sessionId: data.sessionId,
-          utterance: data.utterance,
-          question: data.question,
-          index: data.index,
-          total: data.total,
-          config: data.config,
-          mockedLlm: data.mockedLlm,
-        }),
-      );
-      router.push(`/interview/${data.sessionId}`);
+      const boot = {
+        sessionId: data.sessionId as string,
+        utterance: data.utterance as string,
+        question: data.question,
+        index: data.index as number,
+        total: data.total as number,
+        config: data.config,
+        mockedLlm: Boolean(data.mockedLlm),
+      };
+      try {
+        sessionStorage.setItem(`interview:${boot.sessionId}`, JSON.stringify(boot));
+      } catch {
+        // ignore storage quota / private mode
+      }
+
+      // Hard navigation is more reliable than soft router.push for this demo flow.
+      window.location.assign(`/interview/${boot.sessionId}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "开场失败");
       setBusy(false);
@@ -223,9 +229,9 @@ export default function HomePage() {
           type="button"
           disabled={!canStart || busy}
           onClick={() => void startInterview()}
-          className="rounded-full bg-[var(--accent)] px-6 py-3 text-sm font-semibold text-[#042a26]"
+          className="cursor-pointer rounded-full bg-[var(--accent)] px-6 py-3 text-sm font-semibold text-[#042a26] disabled:cursor-not-allowed"
         >
-          {busy ? "处理中…" : "开始压力面面试"}
+          {busy ? "正在解析并开场…" : "开始压力面面试"}
         </button>
         <p className="text-xs text-[var(--muted)]">本地运行 · DeepSeek · 结束后可下载 PDF 报告</p>
       </div>

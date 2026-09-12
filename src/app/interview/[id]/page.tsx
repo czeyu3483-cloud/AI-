@@ -49,19 +49,52 @@ export default function InterviewPage() {
   }
 
   useEffect(() => {
-    const raw = sessionStorage.getItem(`interview:${sessionId}`);
-    if (!raw) {
-      setError("未找到会话，请从首页重新开始");
-      return;
+    let cancelled = false;
+
+    async function bootSession() {
+      let data: BootState | null = null;
+      try {
+        const raw = sessionStorage.getItem(`interview:${sessionId}`);
+        if (raw) data = JSON.parse(raw) as BootState;
+      } catch {
+        data = null;
+      }
+
+      if (!data) {
+        try {
+          const res = await fetch(`/api/interview/session?sessionId=${encodeURIComponent(sessionId)}`);
+          const json = await res.json();
+          if (!res.ok) throw new Error(json.error || "会话加载失败");
+          data = {
+            sessionId: json.sessionId,
+            utterance: json.utterance,
+            question: json.question,
+            index: json.index,
+            total: json.total,
+            config: json.config,
+          };
+        } catch (e) {
+          if (!cancelled) {
+            setError(e instanceof Error ? e.message : "未找到会话，请从首页重新开始");
+          }
+          return;
+        }
+      }
+
+      if (cancelled || !data) return;
+      setBoot(data);
+      setQuestion(data.question);
+      setIndex(data.index);
+      setTotal(data.total);
+      setChat([{ role: "interviewer", text: data.utterance }]);
+      speak(data.utterance);
+      setAvatar("listening");
     }
-    const data = JSON.parse(raw) as BootState;
-    setBoot(data);
-    setQuestion(data.question);
-    setIndex(data.index);
-    setTotal(data.total);
-    setChat([{ role: "interviewer", text: data.utterance }]);
-    speak(data.utterance);
-    setAvatar("listening");
+
+    void bootSession();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
