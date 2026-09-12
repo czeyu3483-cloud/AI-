@@ -49,20 +49,18 @@ export default function HomePage() {
     setBusy(true);
     setError("");
     try {
-      let current = profile;
-      if (!current) {
-        const parsedRes = await fetch("/api/resume/parse", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: resumeText }),
-        });
-        const parsed = await parsedRes.json();
-        if (!parsedRes.ok || parsed.error) {
-          throw new Error(parsed.error || "简历解析失败");
-        }
-        current = parsed.profile as ResumeProfile;
-        setProfile(current);
+      // Always re-analyze resume on start — no separate "AI summarize" click required.
+      const parsedRes = await fetch("/api/resume/parse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: resumeText }),
+      });
+      const parsed = await parsedRes.json();
+      if (!parsedRes.ok || parsed.error) {
+        throw new Error(parsed.error || "简历分析失败");
       }
+      const current = parsed.profile as ResumeProfile;
+      setProfile(current);
 
       const res = await fetch("/api/interview/start", {
         method: "POST",
@@ -187,14 +185,15 @@ export default function HomePage() {
               type="button"
               disabled={busy || !resumeText.trim()}
               onClick={() => void parseResume()}
-              className="rounded-full border border-[var(--accent)] px-3 py-1.5 text-sm text-[var(--accent)]"
+              className="rounded-full border border-[var(--line)] px-3 py-1.5 text-sm text-[var(--muted)]"
             >
-              {busy ? "AI 总结中…" : "AI 总结简历"}
+              {busy ? "预览生成中…" : "预览 AI 总结（可选）"}
             </button>
           </div>
         </div>
         <p className="mb-2 text-xs text-[var(--muted)]">
           请使用脱敏简历。{fileName ? `已选文件：${fileName}` : "也可直接粘贴文本。"}
+          点击「开始面试」会自动分析简历，无需先点总结。
         </p>
         <textarea
           value={resumeText}
@@ -265,9 +264,11 @@ export default function HomePage() {
           onClick={() => void startInterview()}
           className="cursor-pointer rounded-full bg-[var(--accent)] px-6 py-3 text-sm font-semibold text-[#042a26] disabled:cursor-not-allowed"
         >
-          {busy ? "正在解析并开场…" : "开始压力面面试"}
+          {busy ? "正在分析简历并开场…" : "开始压力面面试"}
         </button>
-        <p className="text-xs text-[var(--muted)]">本地运行 · DeepSeek · 结束后可下载 PDF 报告</p>
+        <p className="text-xs text-[var(--muted)]">
+          开始时会自动 AI 分析简历 · 面试页需授权声音与麦克风
+        </p>
       </div>
     </main>
   );
