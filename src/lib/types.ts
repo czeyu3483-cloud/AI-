@@ -117,14 +117,8 @@ export type FeedbackReport = {
   topActions: string[];
   roleId: RoleId;
   styleResolved: "pressure" | "calm";
-  /** 表达与流畅度（语气词、完整度等） */
-  delivery?: {
-    fluencyScore: number;
-    expressionScore: number;
-    fillerCount: number;
-    topFillers: Array<{ word: string; count: number }>;
-    notes: string[];
-  };
+  /** 因简历/经历诚信问题结束本场时为 true；与软跳过「不会」不同 */
+  integrityBreach?: boolean;
 };
 
 export type InterviewSession = {

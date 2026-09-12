@@ -73,6 +73,64 @@ function pressureOf(rt: QuestionRuntime) {
   return rt.followUpCount + rt.hintCount + rt.reframeCount;
 }
 
+/**
+ * 根据候选人最新一句里的具体名词/职责转移，生成下一刀追问。
+ * 例：先说「负责设计」→ 问设计细节；改口「写代码」→ 追问代码内容/怎么写。
+ * 避免反复同一句「太笼统/再具体一点」。
+ */
+export function craftGroundedFollowUp(
+  answer: string,
+  action: InterviewAction,
+): string {
+  const text = answer.trim();
+
+  // 后说的职责优先（话题转移）：代码/编写压过纯「设计」
+  if (/代码|编写|写代码|coding|实现(?!方案)/i.test(text)) {
+    return "你刚提到写代码——具体写的哪一块？关键逻辑你是怎么实现的？";
+  }
+  if (/接口|API/i.test(text)) {
+    return "接口这块：你负责哪几个、主要路径是什么？量和延迟你怎么看的？";
+  }
+  if (/平台/.test(text) && /负责|做了|编写|开发/.test(text)) {
+    return "这个平台里你亲手落地的模块是哪一块？怎么落到代码里的？";
+  }
+  if (/设计|架构/.test(text) && !/代码|编写|实现/.test(text)) {
+    return "你提到设计，设计里你拍板的最关键一块是什么？依据是什么？";
+  }
+  if (/优化|性能|耗时|延迟|QPS/i.test(text)) {
+    return "优化前指标是什么？你改了哪处、效果怎么验证？";
+  }
+  if (/排查|故障|慢查询|bug|线上/i.test(text)) {
+    return "排查时你第一步看什么？最后根因是什么、你怎么确认的？";
+  }
+  if (/数据库|SQL|索引|缓存|Redis|MySQL|Postgres/i.test(text)) {
+    return "数据这块你具体怎么选型的？有没有踩过坑？";
+  }
+  {
+    const we = (text.match(/我们/g) || []).length;
+    const i = (text.match(/我(?!们)/g) || []).length;
+    if (we >= 2 && i === 0) {
+      return "团队分工里，哪一段是你独立完成的？怎么证明？";
+    }
+  }
+
+  if (action === "FOLLOW_UP_BOUNDARY") {
+    return "这个方案在什么场景下会失效？你怎么兜底？";
+  }
+  if (action === "FOLLOW_UP_PITFALL") {
+    return "落地时踩过什么坑？你怎么处理的？";
+  }
+  if (action === "FOLLOW_UP_TRADEOFF") {
+    return "如果只能保留一个关键取舍，你会留哪个？为什么？";
+  }
+  // ownership / default：仍要落到上一句，而不是空洞的「再具体一点」
+  if (text.length > 0 && text.length < 80) {
+    const clip = text.replace(/\s+/g, "").slice(0, 24);
+    return `你说「${clip}」——其中你亲自做的动作是哪一步？结果怎么验证？`;
+  }
+  return "其中哪一部分是你独立完成的？怎么证明？";
+}
+
 function isShortThinkingRequest(text: string) {
   // 短句要思考时间；长答里顺带「我想一下」不算纯等待
   if (text.length > 40) return false;
@@ -385,7 +443,7 @@ export function decideTurn(input: {
     rt.followUpCount += 1;
     return {
       action: "FOLLOW_UP_OWNERSHIP",
-      utterance: "再具体一点：你当时亲自做了哪一步？结果怎么验证？",
+      utterance: craftGroundedFollowUp(input.answer, "FOLLOW_UP_OWNERSHIP"),
       questionId: rt.question.id,
       followUpCount: rt.followUpCount,
       hintCount: rt.hintCount,
@@ -399,7 +457,7 @@ export function decideTurn(input: {
     pendingTags.push("surface_knowledge_no_practice");
     return {
       action: "FOLLOW_UP_PITFALL",
-      utterance: "听起来很完整。当时有没有失败过的方案？你为什么放弃它？",
+      utterance: craftGroundedFollowUp(input.answer, "FOLLOW_UP_PITFALL"),
       questionId: rt.question.id,
       followUpCount: rt.followUpCount,
       hintCount: rt.hintCount,
@@ -426,17 +484,9 @@ export function decideTurn(input: {
       "FOLLOW_UP_TRADEOFF",
     ];
     const action = actions[Math.floor(Math.random() * 3)]!;
-    const utterance =
-      action === "FOLLOW_UP_BOUNDARY"
-        ? "这个方案在什么场景下会失效？"
-        : action === "FOLLOW_UP_PITFALL"
-          ? "落地时踩过什么坑？你怎么处理的？"
-          : action === "FOLLOW_UP_OWNERSHIP"
-            ? "其中哪一部分是你独立完成的？怎么证明？"
-            : "如果只能保留一个关键取舍，你会留哪个？为什么？";
     return {
       action,
-      utterance,
+      utterance: craftGroundedFollowUp(input.answer, action),
       questionId: rt.question.id,
       followUpCount: rt.followUpCount,
       hintCount: rt.hintCount,

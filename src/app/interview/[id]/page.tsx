@@ -43,6 +43,7 @@ export default function InterviewPage() {
   const [showTextFallback, setShowTextFallback] = useState(false);
   const [asrSupported, setAsrSupported] = useState(true);
   const [interviewerName, setInterviewerName] = useState("王老师");
+  const [interviewEnded, setInterviewEnded] = useState(false);
 
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -55,11 +56,17 @@ export default function InterviewPage() {
   const bargedRef = useRef(false);
   const wantListenRef = useRef(false);
   const audioReadyRef = useRef(false);
+  /** Bumped on intentional stop / new session so stale onend/onerror cannot surface errors or restart. */
+  const recogGenRef = useRef(0);
+  const interviewEndedRef = useRef(false);
+  /** True after final transcript was handed to submitTurn. */
+  const submittedRef = useRef(false);
 
   const progress = useMemo(() => `${Math.min(index + 1, total)} / ${total}`, [index, total]);
 
   function stopRecognition() {
     wantListenRef.current = false;
+    recogGenRef.current += 1;
     try {
       recognitionRef.current?.stop();
     } catch {
@@ -68,6 +75,26 @@ export default function InterviewPage() {
     recognitionRef.current = null;
     listeningRef.current = false;
     setListening(false);
+  }
+
+  function markInterviewEnded(message?: string) {
+    interviewEndedRef.current = true;
+    setInterviewEnded(true);
+    wantListenRef.current = false;
+    stopRecognition();
+    if (message) setStatus(message);
+  }
+
+  function isInterviewOverPayload(data: {
+    done?: boolean;
+    action?: string;
+    signals?: { integrityBreach?: boolean; replyBankId?: number };
+  }) {
+    return Boolean(
+      data.done ||
+        data.action === "FINISH" ||
+        data.signals?.integrityBreach,
+    );
   }
 
   async function speakRaw(text: string): Promise<void> {
@@ -124,11 +151,15 @@ export default function InterviewPage() {
   }
 
   /** 播报面试官话术：期间停 ASR，结束后不自动开麦 */
-  async function playUtterance(text: string) {
+  async function playUtterance(text: string, opts?: { ended?: boolean }) {
     lastUtteranceRef.current = text;
     speakingRef.current = true;
     setAvatar("speaking");
-    setStatus("面试官正在说…听完后再点麦克风回答");
+    setStatus(
+      opts?.ended
+        ? "面试官正在收尾…"
+        : "面试官正在说…听完后再点麦克风回答",
+    );
     stopRecognition();
     answerBuf.current = "";
     bargedRef.current = false;
@@ -137,6 +168,11 @@ export default function InterviewPage() {
     await speakRaw(text);
 
     speakingRef.current = false;
+    if (opts?.ended || interviewEndedRef.current) {
+      setAvatar("idle");
+      setStatus("本场已结束，正在整理复盘…");
+      return;
+    }
     setAvatar("idle");
     setStatus("说完了。点麦克风开始说，再说一次结束并提交");
   }
@@ -226,7 +262,7 @@ export default function InterviewPage() {
   }
 
   async function submitTurn(text: string, silenceStuck = false) {
-    if (busyRef.current || !sessionId) return;
+    if (busyRef.current || !sessionId || interviewEndedRef.current) return;
     busyRef.current = true;
     setBusy(true);
     setError("");
@@ -234,6 +270,8 @@ export default function InterviewPage() {
     setFallbackText("");
     answerBuf.current = "";
     bargedRef.current = false;
+    submittedRef.current = true;
+    wantListenRef.current = false;
     stopRecognition();
     setStatus("思考中…");
     setAvatar("idle");
@@ -250,31 +288,58 @@ export default function InterviewPage() {
       if (typeof data.index === "number") setIndex(data.index);
       if (typeof data.total === "number") setTotal(data.total);
 
+      const over = isInterviewOverPayload(data);
       const nextLine = String(data.utterance || "");
-      if (nextLine) {
-        await playUtterance(nextLine);
+
+      if (over) {
+        markInterviewEnded("面试官正在收尾…");
+        if (nextLine) {
+          try {
+            await playUtterance(nextLine, { ended: true });
+          } catch {
+            // 收尾播报失败也要进复盘，不能继续答题
+          }
+        }
+        markInterviewEnded("先到这儿，我帮你整理复盘…");
+        if (data.feedback) {
+          sessionStorage.setItem(
+            `feedback:${sessionId}`,
+            JSON.stringify(data.feedback as FeedbackReport),
+          );
+        }
+        setTimeout(() => router.push(`/feedback/${sessionId}`), 700);
+        return;
       }
 
-      if (data.done) {
-        setStatus("先到这儿，我帮你整理复盘…");
-        sessionStorage.setItem(
-          `feedback:${sessionId}`,
-          JSON.stringify(data.feedback as FeedbackReport),
-        );
-        setTimeout(() => router.push(`/feedback/${sessionId}`), 700);
+      if (nextLine) {
+        await playUtterance(nextLine);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "回合失败");
       setStatus("出了点小状况，点麦克风再说一次也行");
       setAvatar("idle");
     } finally {
-      busyRef.current = false;
-      setBusy(false);
+      submittedRef.current = false;
+      if (!interviewEndedRef.current) {
+        busyRef.current = false;
+        setBusy(false);
+      } else {
+        // Keep controls disabled after intentional end.
+        busyRef.current = true;
+        setBusy(true);
+      }
     }
   }
 
   async function maybeBargeIn(partial: string) {
-    if (bargedRef.current || busyRef.current || speakingRef.current) return;
+    if (
+      bargedRef.current ||
+      busyRef.current ||
+      speakingRef.current ||
+      interviewEndedRef.current
+    ) {
+      return;
+    }
     if (!shouldBargeIn(partial)) return;
     bargedRef.current = true;
     stopRecognition();
@@ -292,7 +357,7 @@ export default function InterviewPage() {
   }
 
   async function startListening(opts?: { keepBuffer?: boolean }) {
-    if (!audioReadyRef.current || busyRef.current) return;
+    if (!audioReadyRef.current || busyRef.current || interviewEndedRef.current) return;
     if (speakingRef.current) {
       setError("等我说完再开口就行");
       return;
@@ -326,6 +391,9 @@ export default function InterviewPage() {
       return;
     }
 
+    // Invalidate any in-flight handlers from a prior instance before starting a new one.
+    recogGenRef.current += 1;
+    const myGen = recogGenRef.current;
     try {
       recognitionRef.current?.stop();
     } catch {
@@ -338,6 +406,7 @@ export default function InterviewPage() {
     recognition.interimResults = true;
     recognitionRef.current = recognition;
     wantListenRef.current = true;
+    submittedRef.current = false;
     if (!opts?.keepBuffer) {
       answerBuf.current = "";
       bargedRef.current = false;
@@ -348,7 +417,8 @@ export default function InterviewPage() {
     setError("");
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
-      if (speakingRef.current || busyRef.current) return;
+      if (myGen !== recogGenRef.current) return;
+      if (speakingRef.current || busyRef.current || interviewEndedRef.current) return;
 
       let finalChunk = "";
       let live = "";
@@ -356,6 +426,10 @@ export default function InterviewPage() {
         const piece = event.results[i]![0]!.transcript;
         if (event.results[i]!.isFinal) finalChunk += piece;
         else live += piece;
+      }
+      if (finalChunk || live) {
+        // Successful ASR must clear prior false errors (e.g. aborted after stop).
+        setError("");
       }
       if (finalChunk) {
         answerBuf.current += finalChunk;
@@ -365,19 +439,47 @@ export default function InterviewPage() {
     };
 
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      if (myGen !== recogGenRef.current) return;
       listeningRef.current = false;
       setListening(false);
       const code = event.error || "unknown";
-      if (code === "aborted") return;
+
+      // Intentional stop / already submitted / interview over: never surface as failure.
+      if (
+        !wantListenRef.current ||
+        busyRef.current ||
+        submittedRef.current ||
+        interviewEndedRef.current
+      ) {
+        return;
+      }
+      if (code === "aborted" || code === "no-speech") {
+        // no-speech while still holding the mic: quietly continue listening
+        if (
+          code === "no-speech" &&
+          wantListenRef.current &&
+          !busyRef.current &&
+          !speakingRef.current &&
+          !interviewEndedRef.current
+        ) {
+          setTimeout(() => {
+            if (
+              myGen === recogGenRef.current &&
+              wantListenRef.current &&
+              !busyRef.current &&
+              !speakingRef.current &&
+              !interviewEndedRef.current
+            ) {
+              void startListening({ keepBuffer: true });
+            }
+          }, 200);
+        }
+        return;
+      }
       if (code === "not-allowed") {
         wantListenRef.current = false;
         setShowTextFallback(true);
         setError("麦克风权限被拒了，改用文字答也行");
-      } else if (code === "no-speech") {
-        // 静默很常见：用户仍握着麦时自动续听，不自动提交
-        if (wantListenRef.current && !busyRef.current && !speakingRef.current) {
-          setTimeout(() => void startListening({ keepBuffer: true }), 200);
-        }
       } else {
         setShowTextFallback(true);
         setError(`语音识别有点问题（${code}）。可以先文字答。`);
@@ -385,6 +487,7 @@ export default function InterviewPage() {
     };
 
     recognition.onend = () => {
+      if (myGen !== recogGenRef.current) return;
       listeningRef.current = false;
       setListening(false);
       // 浏览器会周期性停掉 continuous；用户仍想说时重启，绝不因静默自动提交
@@ -392,13 +495,18 @@ export default function InterviewPage() {
         wantListenRef.current &&
         !busyRef.current &&
         !speakingRef.current &&
+        !submittedRef.current &&
+        !interviewEndedRef.current &&
         audioReadyRef.current
       ) {
         setTimeout(() => {
           if (
+            myGen === recogGenRef.current &&
             wantListenRef.current &&
             !busyRef.current &&
             !speakingRef.current &&
+            !submittedRef.current &&
+            !interviewEndedRef.current &&
             !listeningRef.current
           ) {
             void startListening({ keepBuffer: true });
@@ -412,6 +520,7 @@ export default function InterviewPage() {
       listeningRef.current = true;
       setListening(true);
     } catch {
+      if (myGen !== recogGenRef.current) return;
       setShowTextFallback(true);
       setError("语音识别起不来，先用文字答吧");
     }
@@ -422,6 +531,7 @@ export default function InterviewPage() {
       setError("先点「开启语音面试」");
       return;
     }
+    if (interviewEndedRef.current || interviewEnded) return;
     if (busyRef.current) return;
     if (speakingRef.current) {
       setError("等我说完再开口就行");
@@ -430,8 +540,8 @@ export default function InterviewPage() {
     if (listeningRef.current || wantListenRef.current) {
       // 第二次点击：停止并提交
       wantListenRef.current = false;
-      stopRecognition();
       const text = answerBuf.current.trim();
+      stopRecognition();
       if (text) void submitTurn(text);
       else {
         setStatus("我还没听清，再点麦克风说一遍？");
@@ -443,8 +553,10 @@ export default function InterviewPage() {
   }
 
   async function finishNow() {
+    if (interviewEndedRef.current) return;
+    markInterviewEnded("正在结束并生成复盘…");
+    busyRef.current = true;
     setBusy(true);
-    stopRecognition();
     const res = await fetch("/api/interview/finish", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -471,7 +583,9 @@ export default function InterviewPage() {
         <p className="text-xs tracking-[0.2em] text-[var(--muted)]">语音面试</p>
         <h1 className="mt-2 text-2xl font-semibold">和{interviewerName}聊聊</h1>
         <p className="mt-2 text-sm text-[var(--muted)]">
-          听完后点麦克风开始说，再说一次结束并提交
+          {interviewEnded
+            ? "本场面试已结束"
+            : "听完后点麦克风开始说，再说一次结束并提交"}
         </p>
       </header>
 
@@ -503,52 +617,54 @@ export default function InterviewPage() {
             {listening ? <span className="voice-ring" /> : null}
             <button
               type="button"
-              disabled={busy || avatar === "speaking"}
+              disabled={busy || interviewEnded || avatar === "speaking"}
               onClick={() => void toggleMic()}
               className={`relative flex h-24 w-24 items-center justify-center rounded-full border-2 text-sm font-semibold transition ${
                 listening
                   ? "border-[var(--accent-2)] bg-[var(--accent-2)]/20 text-[var(--accent-2)]"
                   : "border-[var(--accent)] bg-[var(--accent)] text-[#042a26]"
-              }`}
+              } disabled:opacity-50`}
             >
-              {listening ? "说完了" : busy ? "…" : "麦克风"}
+              {interviewEnded ? "已结束" : listening ? "说完了" : busy ? "…" : "麦克风"}
             </button>
           </div>
 
           <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
             <button
               type="button"
-              disabled={busy || avatar === "speaking" || !lastUtteranceRef.current}
+              disabled={busy || interviewEnded || avatar === "speaking" || !lastUtteranceRef.current}
               onClick={() => void playUtterance(lastUtteranceRef.current)}
-              className="rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--muted)]"
+              className="rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--muted)] disabled:opacity-50"
             >
               重播上一句
             </button>
             <button
               type="button"
-              disabled={busy || avatar === "speaking"}
+              disabled={busy || interviewEnded || avatar === "speaking"}
               onClick={() => void submitTurn("我不会")}
-              className="rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--muted)]"
+              className="rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--muted)] disabled:opacity-50"
             >
               模拟卡壳
             </button>
             <button
               type="button"
+              disabled={interviewEnded}
               onClick={() => setShowTextFallback((value) => !value)}
-              className="rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--muted)]"
+              className="rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--muted)] disabled:opacity-50"
             >
               {showTextFallback ? "收起文字作答" : "文字作答（备用）"}
             </button>
             <button
               type="button"
+              disabled={interviewEnded}
               onClick={() => void finishNow()}
-              className="rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--muted)]"
+              className="rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--muted)] disabled:opacity-50"
             >
               提前结束并生成复盘
             </button>
           </div>
 
-          {showTextFallback ? (
+          {showTextFallback && !interviewEnded ? (
             <div className="mt-6 w-full max-w-lg space-y-3 rounded-2xl border border-[var(--line)] bg-[var(--card)]/80 p-4">
               <p className="text-xs text-[var(--muted)]">
                 没麦克风时可用文字；本机请尽量用 Chrome 并允许麦克风。

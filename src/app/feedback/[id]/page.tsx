@@ -48,38 +48,19 @@ export default function FeedbackPage() {
 
       {feedback && (
         <>
+          {feedback.integrityBreach ? (
+            <section className="rounded-2xl border border-[var(--danger)]/50 bg-[var(--danger)]/10 p-5">
+              <h2 className="mb-2 text-lg font-medium text-[var(--danger)]">诚信红线</h2>
+              <p className="leading-7 text-[var(--muted)]">
+                本场因简历/经历真实性问题结束。诚信缺口属于严重问题，不应给出高分评价。
+              </p>
+            </section>
+          ) : null}
+
           <section className="rounded-2xl border border-[var(--line)] bg-[var(--card)]/80 p-5">
             <h2 className="mb-2 text-lg font-medium">总体评价</h2>
             <p className="leading-7 text-[var(--muted)]">{feedback.overallSummary}</p>
           </section>
-
-          {feedback.delivery ? (
-            <section className="rounded-2xl border border-[var(--line)] bg-[var(--card)]/80 p-5">
-              <h2 className="mb-2 text-lg font-medium">表达与流畅度</h2>
-              <div className="mb-3 flex flex-wrap gap-4 text-sm">
-                <p>
-                  流畅度：
-                  <span className="text-[var(--accent)]">{feedback.delivery.fluencyScore}/5</span>
-                </p>
-                <p>
-                  表达力：
-                  <span className="text-[var(--accent)]">{feedback.delivery.expressionScore}/5</span>
-                </p>
-                <p className="text-[var(--muted)]">语气词约 {feedback.delivery.fillerCount} 处</p>
-              </div>
-              {feedback.delivery.topFillers?.length ? (
-                <p className="mb-2 text-sm text-[var(--muted)]">
-                  高频语气词：
-                  {feedback.delivery.topFillers.map((f) => `「${f.word}」×${f.count}`).join("、")}
-                </p>
-              ) : null}
-              <ul className="list-disc space-y-1 pl-5 text-sm text-[var(--muted)]">
-                {(feedback.delivery.notes || []).map((n) => (
-                  <li key={n}>{n}</li>
-                ))}
-              </ul>
-            </section>
-          ) : null}
 
           <section className="space-y-4">
             {feedback.perQuestion.map((q) => (

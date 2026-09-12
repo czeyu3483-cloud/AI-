@@ -21,6 +21,7 @@ export async function POST(req: Request) {
         utterance: session.lastUtterance,
         feedback: session.feedback,
         action: "FINISH",
+        signals: { integrityBreach: Boolean(session.feedback?.integrityBreach) },
       });
     }
 
@@ -35,8 +36,19 @@ export async function POST(req: Request) {
       silenceStuck: Boolean(body.silenceStuck),
     });
 
+    // FINISH / bank endInterview / integrity 一律视为本场结束
+    const shouldEnd =
+      Boolean(decision.done) ||
+      decision.action === "FINISH" ||
+      Boolean(decision.signals.integrityBreach);
+    if (shouldEnd) {
+      decision.done = true;
+      decision.action = "FINISH";
+    }
+
     const q = session.queue[Math.min(session.currentIndex, session.queue.length - 1)]!;
     // replyBank / 全局控场原句 / 诚信结束：保留口吻，不做润色改写
+    // FOLLOW_UP 非 verbatim：带上候选人上一句，让润色贴着具体名词追问
     const polished = await polishUtterance({
       action: decision.action,
       draft: decision.utterance,
@@ -47,7 +59,8 @@ export async function POST(req: Request) {
         decision.verbatim ||
           decision.signals.integrityBreach ||
           decision.signals.needsTimeToThink ||
-          decision.signals.replyBankId != null,
+          decision.signals.replyBankId != null ||
+          shouldEnd,
       ),
       bankStyle:
         decision.signals.replyBankId != null
@@ -72,6 +85,8 @@ export async function POST(req: Request) {
       saveSession(session);
       return NextResponse.json({
         ...decision,
+        done: true,
+        action: "FINISH",
         mockedLlm: polished.mocked,
         feedback: session.feedback,
         index: session.currentIndex,

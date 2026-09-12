@@ -1,11 +1,12 @@
 import OpenAI from "openai";
 import { RED_FLAG_PATTERNS } from "./config";
-import { analyzeSessionDelivery } from "./fluency";
 import type {
+  AbilityTag,
   FeedbackReport,
   InterviewAction,
   InterviewSession,
   ResumeProfile,
+  TurnDecision,
 } from "./types";
 
 function client() {
@@ -71,16 +72,21 @@ export async function polishUtterance(input: {
   if (input.skipPolish) return { text: fallback, mocked: false };
   const c = client();
   if (!c) return { text: fallback, mocked: true };
+  const isFollowUp = String(input.action).startsWith("FOLLOW_UP");
   try {
     const completion = await c.chat.completions.create({
       model: modelName(),
-      temperature: 0.4,
+      temperature: isFollowUp ? 0.45 : 0.4,
       max_tokens: 120,
       messages: [
         {
           role: "system",
           content:
-            "你是大厂研发岗真人面试官。口语自然，像当面聊天。中立、一次只问一个问题或不问只控场；不暗示对错；不给标准答案；不当场宣判；不嘲讽。语气沉稳偏紧。禁止说出「模拟」「压力面」「AI」「数字人」等元信息。全局口径：薪资加班等说「这块后面 HR 会聊」；过不过/录用/内部政策说「这个面试环节不好说，我们先回到题目」；候选人要思考时间只回「好的」并等待；答太长用「那我们先看下一个问题」换题；弄虚作假则让其改扎实简历并结束。若候选人明显不会，简短记下并换题，不要刨根问底。只输出最终要对候选人说的一句中文。草稿已写清结束或换题意图时，请保留该意图，不要改成继续追问。若提供 bankStyle，仅作语气参考，仍以 draft 语义为准。",
+            "你是大厂研发岗真人面试官（不是 AI、不是模拟器）。口语自然，像当面聊天。中立、一次只问一个问题或不问只控场；不暗示对错；不给标准答案；不当场宣判；不嘲讽。语气沉稳偏紧。禁止说出「模拟」「压力面」「AI」「数字人」等元信息。" +
+            "全局口径：薪资加班等说「这块后面 HR 会聊」；过不过/录用/内部政策说「这个面试环节不好说，我们先回到题目」；候选人要思考时间只回「好的」并等待；答太长用「那我们先看下一个问题」换题；弄虚作假则让其改扎实简历并结束。若候选人明显不会，简短记下并换题，不要刨根问底。只输出最终要对候选人说的一句中文。草稿已写清结束或换题意图时，请保留该意图，不要改成继续追问。若提供 bankStyle，仅作语气参考，仍以 draft 语义为准。" +
+            (isFollowUp
+              ? "【追问】必须像真人一样跟住候选人上一句：抓住最新具体名词/职责（设计→问设计细节；改口说写代码/平台→追问写了什么代码、怎么写），可以改写 draft 使其更贴上一句，但禁止重复同一句「太笼统/再具体一点/太空泛」；不要忽略话题转移。"
+              : ""),
         },
         {
           role: "user",
@@ -91,6 +97,9 @@ export async function polishUtterance(input: {
             currentQuestion: input.questionPrompt,
             userAnswer: input.userAnswer?.slice(0, 800) ?? "",
             bankStyle: input.bankStyle || undefined,
+            instruction: isFollowUp
+              ? "根据 userAnswer 里最新具体信息，输出一句贴地追问；勿复读空泛套话。"
+              : undefined,
           }),
         },
       ],
@@ -190,18 +199,67 @@ export async function structureResume(
   }
 }
 
-export async function generateFeedback(session: InterviewSession): Promise<FeedbackReport> {
+/** 诚信/简历造假结束（与软跳过「不会」不同）：必须低分并严肃点名。 */
+export function detectIntegrityBreach(session: InterviewSession): boolean {
+  if (session.runtimes.some((rt) => rt.tags.includes("role_mismatch_suspected"))) {
+    return true;
+  }
+  for (const ev of session.events) {
+    if (ev.type !== "decision") continue;
+    const payload = ev.payload as Partial<TurnDecision> | null;
+    if (!payload || typeof payload !== "object") continue;
+    if (payload.signals?.integrityBreach) return true;
+    if (
+      payload.action === "FINISH" &&
+      payload.pendingTags?.includes("role_mismatch_suspected")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 
-  const deliveryStats = analyzeSessionDelivery(
-    session.runtimes.map((rt) => ({ questionId: rt.question.id, answers: rt.userAnswers })),
-  ).overall;
-  const delivery = {
-    fluencyScore: deliveryStats.fluencyScore,
-    expressionScore: deliveryStats.expressionScore,
-    fillerCount: deliveryStats.fillerCount,
-    topFillers: deliveryStats.topFillers,
-    notes: deliveryStats.notes,
+function integrityFeedback(session: InterviewSession): FeedbackReport {
+  const tag: AbilityTag = "role_mismatch_suspected";
+  return {
+    overallSummary:
+      "本场因简历/项目经历诚信问题提前结束。候选人承认或被判定存在简历乱写、经历注水、挂名或项目造假等严重问题。" +
+      "这属于一票否决级风险：技术细节再多也无法弥补诚信缺口。请先把简历改扎实、只写亲历可复盘的内容，再来面试。本报告不做录用结论，但诚信项评价为不合格。",
+    perQuestion: session.runtimes.map((rt) => {
+      const tags = Array.from(new Set<AbilityTag>([...rt.tags, tag]));
+      return {
+        questionId: rt.question.id,
+        prompt: rt.question.prompt,
+        userAnswer: rt.userAnswers.join("\n") || "（未作答/卡壳）",
+        scores: rt.question.rubrics.map((r) => ({
+          dimension: r.dimension,
+          score: 1,
+          evidence: "诚信红线触发：简历/经历真实性存疑，本项不予高分",
+        })),
+        tags,
+        improvements: [
+          "删除未亲历或无法讲清细节的项目/职责",
+          "每条经历准备可验证的个人动作、数据与复盘",
+          "面试中绝不夸大、挂名或临场编造",
+        ],
+      };
+    }),
+    topActions: [
+      "重写简历：只保留可深挖的真实经历",
+      "对每个项目准备「我做了什么 / 取舍 / 验证」三句话",
+      "下次面试前自检：能否承受连续追问而不崩",
+    ],
+    roleId: session.roleId,
+    styleResolved: session.config.styleResolved,
+    integrityBreach: true,
   };
+}
+
+export async function generateFeedback(session: InterviewSession): Promise<FeedbackReport> {
+  if (detectIntegrityBreach(session)) {
+    return integrityFeedback(session);
+  }
+
   const fallback: FeedbackReport = {
     overallSummary:
       "本场为研发岗压力面模拟。整体完成了主流程；建议继续用项目细节、取舍与边界证明实践深度。本报告不做录用结论。",
@@ -220,7 +278,6 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
     topActions: ["准备量化结果的项目故事", "每题主动讲清取舍与边界", "用故障复盘练排查路径"],
     roleId: session.roleId,
     styleResolved: session.config.styleResolved,
-    delivery,
   };
 
   const c = client();
@@ -235,14 +292,13 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
         {
           role: "system",
           content:
-            "输出复盘 JSON：{overallSummary, perQuestion:[{questionId,prompt,userAnswer,scores:[{dimension,score,evidence}],tags,improvements}],topActions}。分数1-5。不要宣判通过/不通过。不要 markdown。可结合 delivery 里的语气词与流畅度信号写 overallSummary。",
+            "输出复盘 JSON：{overallSummary, perQuestion:[{questionId,prompt,userAnswer,scores:[{dimension,score,evidence}],tags,improvements}],topActions}。分数1-5。不要宣判通过/不通过。不要 markdown。不要评价语音流畅度/语气词/表达腔调。软跳过「不会」与诚信造假不同：若 tags 无 role_mismatch_suspected，按正常能力复盘即可。",
         },
         {
           role: "user",
           content: JSON.stringify({
             roleId: session.roleId,
             style: session.config.styleResolved,
-            delivery,
             items: session.runtimes.map((rt) => ({
               questionId: rt.question.id,
               prompt: rt.question.prompt,
@@ -267,7 +323,6 @@ export async function generateFeedback(session: InterviewSession): Promise<Feedb
       topActions: Array.isArray(json.topActions) ? json.topActions.slice(0, 5) : fallback.topActions,
       roleId: session.roleId,
       styleResolved: session.config.styleResolved,
-      delivery,
     };
   } catch {
     return fallback;
