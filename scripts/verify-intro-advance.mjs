@@ -1,5 +1,6 @@
 /**
- * Regression: start → 自我介绍 → submit → advances to dig Q1 (resume_deep_dive).
+ * Regression: 自我介绍提交后必须推进（或仅一次补充后再推进）；
+ * 并校验 selfIntroText 合并首答+补充。
  * Usage: node scripts/verify-intro-advance.mjs [baseUrl]
  */
 const base = process.argv[2] || "http://127.0.0.1:3456";
@@ -23,6 +24,8 @@ const resumeText = `张三
 技能：React TypeScript`;
 
 const { profile } = await post("/api/resume/parse", { text: resumeText });
+
+// —— A) 短答 → 一次补充 → 推进深挖 ——
 const start = await post("/api/interview/start", {
   roleId: "rd_general",
   styleId: "pressure",
@@ -59,9 +62,37 @@ if (solid.phase !== "resume_deep_dive" || solid.index !== 1) {
 if (!String(solid.question?.id || "").includes("dig")) {
   throw new Error(`expected dig question id, got ${solid.question?.id}`);
 }
+if (/我先记下了|我记录一下/.test(solid.utterance || "")) {
+  throw new Error(`advance used forbidden note-taking phrase: ${solid.utterance}`);
+}
 
-console.log("OK intro→supplement→dig Q1", {
+// —— B) 完整自我介绍一次提交即推进 ——
+const start2 = await post("/api/interview/start", {
+  roleId: "rd_general",
+  styleId: "pressure",
+  trackId: "biz",
+  resume: profile,
+});
+const once = await post("/api/interview/turn", {
+  sessionId: start2.sessionId,
+  answer:
+    "我是张三，北京大学计算机专业，在字节跳动实习，负责校园二手交易平台的 Next.js 前端开发。",
+});
+if (once.phase === "self_intro" && once.index === 0) {
+  // 允许一次简历冲突挑战，但不允许再次「补充」式卡住
+  if (/补充|展开一点|再补一句/.test(once.utterance || "")) {
+    throw new Error(`complete intro should not get supplement probe: ${once.utterance}`);
+  }
+} else if (once.phase !== "resume_deep_dive" || once.index !== 1) {
+  throw new Error(
+    `expected dig or conflict-challenge, got phase=${once.phase} index=${once.index}`,
+  );
+}
+
+console.log("OK intro→supplement→dig Q1 (+ complete path)", {
   digId: solid.question.id,
   phase: solid.phase,
   index: solid.index,
+  oncePhase: once.phase,
+  onceIndex: once.index,
 });

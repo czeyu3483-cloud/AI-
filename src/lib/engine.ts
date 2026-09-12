@@ -342,6 +342,26 @@ export function buildQuestionQueue(
   return [introQ, ...main];
 }
 
+/**
+ * 合并自我介绍各段作答到 session.selfIntroText（首答 + 可选补充 + 冲突解释）。
+ * 不因后段更长而覆盖前段；若后段已包含前段则只保留后段。
+ */
+export function mergeSelfIntroText(session: InterviewSession, chunk: string) {
+  const next = (chunk || "").trim();
+  if (!next || /时间到|作答截止/.test(next)) return;
+  const prev = (session.selfIntroText || "").trim();
+  if (!prev) {
+    session.selfIntroText = next;
+    return;
+  }
+  if (prev.includes(next)) return;
+  if (next.includes(prev) && next.length > prev.length) {
+    session.selfIntroText = next;
+    return;
+  }
+  session.selfIntroText = `${prev} ${next}`.trim();
+}
+
 /** 自我介绍结束后，用介绍细节 enrichment 后续深挖题干 */
 export function enrichDigsWithSelfIntro(session: InterviewSession) {
   const intro = (session.selfIntroText || "").trim();
@@ -806,8 +826,8 @@ export function decideTurn(input: {
 
   if (input.answer.trim()) rt.userAnswers.push(input.answer.trim());
 
-  // 自我介绍：落盘供后续深挖；不完整最多补充 1 次，然后必须进入主问题（修复「卡在自我介绍」）
-  // 若正在解释上一轮简历冲突挑战，则跳过本段，交给下方冲突解释逻辑
+  // 自我介绍：落盘 selfIntroText；不完整最多 1 次「补充」；之后（或已完整）必须 advance
+  // 简历冲突可额外挑战 1 次，解释后同样必须 advance（见下方 pendingConflictChallenge 分支）
   if (
     (rt.question.isSelfIntro || rt.question.phase === "self_intro") &&
     !session.pendingConflictChallenge
@@ -817,13 +837,9 @@ export function decideTurn(input: {
     const isTimeoutPlaceholder = /时间到|作答截止/.test(text);
     const incomplete = !text || text.length < INTRO_MIN || isTimeoutPlaceholder;
 
-    if (text && !isTimeoutPlaceholder) {
-      const prev = (session.selfIntroText || "").trim();
-      session.selfIntroText =
-        !prev || text.length >= prev.length ? text : `${prev} ${text}`.trim();
-    }
+    mergeSelfIntroText(session, text);
 
-    // 不完整：最多一次补充（与全局「最多补充一次」对齐）；静默卡死/二次短答则放行
+    // 不完整：最多一次补充话术；已补充过 / 静默卡死 / 二次短答 → 必须进入下一题
     if (incomplete && rt.vagueFollowUpCount < 1 && !input.silenceStuck) {
       rt.vagueFollowUpCount += 1;
       rt.followUpCount += 1;
@@ -839,7 +855,6 @@ export function decideTurn(input: {
       };
     }
 
-    if (!session.selfIntroText && text) session.selfIntroText = text;
     enrichDigsWithSelfIntro(session);
 
     // 自我介绍 vs 简历：实质性冲突时专业挑战一次，再进入主问题
@@ -901,6 +916,7 @@ export function decideTurn(input: {
       }
     }
 
+    // 完整作答、或已用过一次补充：强制进入深挖（过渡话术见 pickAdvancePrefix）
     return advance(session, "ASK", "", signals, pendingTags);
   }
 
@@ -1249,14 +1265,9 @@ export function decideTurn(input: {
         pendingTags.push("authenticity_risk");
         addSessionTag(session, "authenticity_risk");
       }
-      // 自我介绍阶段的冲突解释：收口后进入主问题，不再就介绍死磕
+      // 自我介绍阶段的冲突解释：合并进 selfIntroText 后进入主问题，不再就介绍死磕
       if (rt.question.isSelfIntro || rt.question.phase === "self_intro") {
-        if (input.answer.trim()) {
-          const prev = (session.selfIntroText || "").trim();
-          const cur = input.answer.trim();
-          session.selfIntroText =
-            !prev || cur.length >= prev.length ? cur : `${prev} ${cur}`.trim();
-        }
+        mergeSelfIntroText(session, input.answer);
         enrichDigsWithSelfIntro(session);
         const decision = advance(session, "ASK", note, signals, pendingTags);
         decision.utterance = `${note}${decision.utterance.replace(/^好[，,。. ]?/, "")}`;

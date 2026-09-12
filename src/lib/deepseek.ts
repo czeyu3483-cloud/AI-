@@ -87,7 +87,7 @@ export function sanitizeUtterance(text: string, fallback: string) {
   if (!out) return fallback;
   // 禁记录腔、当场判对错、开场泄题量
   out = out
-    .replace(/好的?[，,]?\s*我先记下了[。.]?/g, "好的，那我们看下一个问题。")
+    .replace(/好的?[，,]?\s*我先记下了[。.]?/g, "好的，那我们进入下一个问题。")
     .replace(/我记录一下你的回答[。.]?/g, "")
     .replace(/记下了你的回答[。.]?/g, "")
     .replace(/我记下了[。.]?/g, "")
